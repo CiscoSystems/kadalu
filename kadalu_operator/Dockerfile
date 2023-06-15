@@ -1,12 +1,12 @@
-ARG builder_version="latest"
-
-FROM kadalu/builder:${builder_version} as builder
+ARG builder_version="1.1.0"
+FROM  dockerhub.cisco.com/robot-dockerprod/kadalu-builder:${builder_version} as builder
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
 
 COPY requirements/operator-requirements.txt /tmp/
 
 RUN python3 -m pip install -r /tmp/operator-requirements.txt --no-cache-dir && \
+    python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/operator-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
 FROM python:3.10-slim-bullseye as prod
@@ -46,7 +46,7 @@ COPY kadalu_operator/main.py                       /kadalu/
 COPY kadalu_operator/start.py                      /kadalu/
 COPY kadalu_operator/metrics.py                    /kadalu/
 COPY kadalu_operator/exporter.py                   /kadalu/
-COPY cli/build/kubectl-kadalu               /usr/bin/kubectl-kadalu
+COPY cli/kubectl_kadalu               /usr/bin/kubectl-kadalu
 COPY lib/startup.sh                         /kadalu/startup.sh
 
 RUN chmod +x /kadalu/startup.sh

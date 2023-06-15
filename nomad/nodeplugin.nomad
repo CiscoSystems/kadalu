@@ -31,7 +31,7 @@ job "kadalu-csi-nodeplugin" {
   }
 
   group "nodeplugin" {
-    task "kadalu-nodeplugin" {
+    task ":kadalu-nodeplugin" {
       driver = "docker"
 
       template {
@@ -72,7 +72,7 @@ job "kadalu-csi-nodeplugin" {
       }
 
       config {
-        image = "docker.io/kadalu/kadalu-csi:${var.kadalu_version}"
+        image = "dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0"
 
         privileged = true
 

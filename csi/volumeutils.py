@@ -9,6 +9,7 @@ import re
 import shutil
 import threading
 import time
+import netaddr
 from errno import ENOTCONN
 from pathlib import Path
 
@@ -1083,9 +1084,19 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     ## on server component we can mount glusterfs with client-pid
     #if not is_client:
     #    cmd.extend(["--client-pid", "-14"])
+    if netaddr.valid_ipv6(hosts[0]):
+        cmd.extend(["--xlator-option","transport.address-family=inet6"])
+    logging.info(logf(
+            "proceeding with xlator",
+             cmd=cmd,
+             ))
 
     for host in hosts.split(','):
-        cmd.extend(["--volfile-server", host])
+        cmd.extend(["--volfile-server", host+":24007"])
+        logging.info(logf(
+        "gluster-kadalu hostname",
+         cmd=cmd,
+         ))
 
     g_ops = []
     if options:

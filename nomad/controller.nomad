@@ -107,7 +107,7 @@ job "kadalu-csi-controller" {
       }
 
       config {
-        image = "docker.io/kadalu/kadalu-csi:${var.kadalu_version}"
+        image = "dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0"
 
         # Nomad client config for docker plugin should have privileged set to 'true'
         # refer https://www.nomadproject.io/docs/drivers/docker#privileged

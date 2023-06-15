@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import netaddr
 
 import xxhash
 
@@ -91,8 +92,12 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
         retry_count = 0
         while retry_count < 4:
             try:
-                with socket.create_connection((host, int(port)), timeout=timeout) as sock:
-                    sock.shutdown(socket.SHUT_RDWR)
+                if netaddr.valid_ipv(host):
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                else:
+                    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                sock.connect((host, port))
+                sock.close()
                 return True
             except socket.error:
                 logging.info(logf(
@@ -109,6 +114,11 @@ def is_host_reachable(hosts, port):
     """Check if glusterd is reachable in the given node"""
 
     timeout = 5
+
+    if netaddr.valid_ipv4(hosts[0]):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    else:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     for host in hosts:
         try:
             sock = socket.create_connection((host, int(port)), timeout=timeout)
