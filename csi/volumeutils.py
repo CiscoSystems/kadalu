@@ -9,7 +9,9 @@ import re
 import shutil
 import threading
 import time
-import netaddr
+import yaml
+import socket
+import uuid
 from errno import ENOTCONN
 from pathlib import Path
 
@@ -20,19 +22,21 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-GLUSTERFS_CMD = "/opt/sbin/glusterfs"
+GLUSTERFS_CMD = "/usr/sbin/glusterfs"
+SOCKET_FILE_PATH = "/kadalu/glusterfs/glustersocket.sock"
 MOUNT_CMD = "/bin/mount"
 UNMOUNT_CMD = "/bin/umount"
 MKFS_XFS_CMD = "/sbin/mkfs.xfs"
 XFS_GROWFS_CMD = "/sbin/xfs_growfs"
 RESERVED_SIZE_PERCENTAGE = 10
-HOSTVOL_MOUNTDIR = "/mnt"
+HOSTVOL_MOUNTDIR = "/mnt/kadalu"
 VOLFILES_DIR = "/kadalu/volfiles"
 VOLINFO_DIR = "/var/lib/gluster"
 
 statfile_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
 mount_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
 
+is_connected = False
 
 class Volume():
     """Hosting Volume object"""
@@ -64,6 +68,80 @@ class Volume():
         """Get Volume name"""
         return self.volname
 
+def connectSocket(client_socket):
+    retry_interval = 60
+    max_retries = 5
+
+    retry_count = 0
+    connected = False
+
+    while retry_count < max_retries and not connected:
+        try:
+            # Attempt to connect to the server
+            client_socket.connect(SOCKET_FILE_PATH)
+            connected = True
+            logging.info("Connected to the server!")
+            break
+        except ConnectionRefusedError:
+            # Connection refused, wait for a while before retrying
+            logging.info("Connection refused. Retrying in seconds..." + str(retry_interval))
+            time.sleep(retry_interval)
+            retry_count += 1
+
+    logging.info("the connection state is " + str(connected))
+    return connected
+
+
+def socketClient(cmd):
+    global is_connected
+
+    client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    json_data = json.dumps({
+        "error" : "Unable to execute command",
+        "result": 1,
+        "output" : ""
+    })
+
+    connected = True
+    if not is_connected :
+        logging.info("socket not connected" + str(is_connected))
+        connected = connectSocket(client_socket)
+        is_connected = connected
+
+    if not connected:
+        logging.error("Unable to connect to the server after max retries.")
+        json_data["error"] = "Unable to connect to the server for command execution after max retries."
+    else:
+        try:
+            logging.info("Sending the data to socket server for cmd execution")
+            # Send data
+            data = {
+                "id" : str(uuid.uuid4()),
+                "type" : 4,
+                "command" : cmd,
+                "node" : "",
+                "hidden" : False
+            }
+
+            yaml_data = yaml.dump(data)
+            client_socket.sendall(yaml_data.encode('utf-8'))
+
+            logging.info("after sending data to server")
+            #receive a response from the server
+            response = client_socket.recv(1024).decode()
+            logging.info("Server response:")
+            logging.info(response)
+
+            json_data = json.loads(response)
+
+        finally:
+            # Close the connection
+            client_socket.close()
+            is_connected = False
+    if len(json_data["error"]) != 0 :
+        raise CommandException(json_data["output"], json_data["error"], json_data["result"])
+    return (json_data["output"], json_data["error"], json_data["result"])
 
 def filter_node_affinity(volume, filters):
     """
@@ -883,8 +961,22 @@ def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
         fstype = "xfs" if fstype is None else fstype
         execute(MOUNT_CMD, "-t", fstype, pvpath, mountpoint)
     else:
-        execute(MOUNT_CMD, "--bind", pvpath, mountpoint)
-
+        mountcmd = [
+            "/usr"+MOUNT_CMD,
+            "--bind",
+            pvpath,
+            mountpoint
+        ]
+        logging.info("executing the mount command ", mountcmd)
+        try:
+            socketClient(" ".join(mountcmd) + " " + mountpoint)
+        except CommandException as err:
+            logging.error(logf(
+                "error to execute command",
+                cmd=mountcmd,
+                error=format(err)
+            ))
+            return False
     os.chmod(mountpoint, 0o777)
     return True
 
@@ -989,7 +1081,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             cmd.extend(["--volfile-server", host])
 
         try:
-            (_, err, _) = execute(*cmd)
+            (_, err, _) = socketClient(" ".join(cmd) + " " + mountpoint)
         except CommandException as err:
             logging.error(logf(
                 "error to execute command",
@@ -1112,7 +1204,7 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
 
     command = cmd + g_ops + [mountpoint]
     try:
-        execute(*command)
+        socketClient(" ".join(command) + " " + mountpoint)
     except CommandException as excep:
         if  excep.err.find("invalid option") != -1 or excep.err.find("unrecognized option") != -1:
             logging.warning(logf(
@@ -1121,9 +1213,10 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
                 ))
             command = cmd + [mountpoint]
             try:
-                execute(*command)
-            except CommandException as retry_err:
-                logging.error(logf(
+
+                socketClient(" ".join(command) + " " + mountpoint)
+            except CommandException as excep:
+                logging.info(logf(
                     "mount command failed",
                     cmd=command,
                     error=retry_err,
