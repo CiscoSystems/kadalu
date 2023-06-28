@@ -11,7 +11,7 @@ import grpc
 from kadalulib import logf
 from volumeutils import mount_glusterfs, mount_volume, unmount_volume
 
-HOSTVOL_MOUNTDIR = "/mnt/kadalu"
+HOSTVOL_MOUNTDIR = "/mnt"
 GLUSTERFS_CMD = "/opt/sbin/glusterfs"
 MOUNT_CMD = "/bin/mount"
 UNMOUNT_CMD = "/bin/umount"
