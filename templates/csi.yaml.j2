@@ -170,13 +170,37 @@ spec:
         app.kubernetes.io/component: csi-driver
         app.kubernetes.io/name: kadalu-csi-provisioner
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: "cw-node-type"
+                operator: In
+                values:
+                - "master"
+                - "hybrid"
       serviceAccountName: kadalu-csi-provisioner
       containers:
         - name: csi-provisioner
-          image: {{ images_hub }}/raspbernetes/csi-external-provisioner:2.0.2
+          image: registry.k8s.io/sig-storage/csi-provisioner:v3.5.0
+          ports:
+            - containerPort: 8080
+              name: http-endpoint
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 1
+            httpGet:
+                path: /healthz/leader-election
+                port: http-endpoint
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 20
           args:
             - "--csi-address=$(ADDRESS)"
             - "--timeout=3m"
+            - "--leader-election"
+            - "--http-endpoint=:8080"
           env:
             - name: ADDRESS
               value: /var/lib/csi/sockets/pluginproxy/csi.sock
@@ -190,10 +214,24 @@ spec:
             - name: socket-dir
               mountPath: /var/lib/csi/sockets/pluginproxy/
         - name: csi-attacher
-          image: {{ images_hub }}/raspbernetes/csi-external-attacher:3.0.0
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.3.0
           args:
             - "--v=5"
             - "--csi-address=$(ADDRESS)"
+            - "--leader-election"
+            - "--http-endpoint=:8081"
+          ports:
+            - containerPort: 8081
+              name: http-endpoint
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 2
+            httpGet:
+                path: /healthz/leader-election
+                port: http-endpoint
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 20
           env:
             - name: ADDRESS
               value: /var/lib/csi/sockets/pluginproxy/csi.sock
@@ -253,10 +291,24 @@ spec:
             - name: varlog
               mountPath: "/var/log/gluster"
         - name: csi-resizer
-          image: {{ images_hub }}/raspbernetes/csi-external-resizer:1.0.0
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.8.0
+          ports:
+            - containerPort: 8082
+              name: http-endpoint
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 1
+            httpGet:
+                path: /healthz/leader-election
+                port: http-endpoint
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 20
           args:
             - "--csi-address=$(ADDRESS)"
             - "--timeout=3m"
+            - "--leader-election"
+            - "--http-endpoint=:8082"
           env:
             - name: ADDRESS
               value: /var/lib/csi/sockets/pluginproxy/csi.sock
