@@ -106,7 +106,8 @@ spec:
           hostPath:
             path: "/dev"
         - name: varlog
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kadalu-ds-log-pvc
         - name: csi-dir
           hostPath:
             path: {{ include "common.configs.kubeletDir" . }}/plugins/kubernetes.io/csi/

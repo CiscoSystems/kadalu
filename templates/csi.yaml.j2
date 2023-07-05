@@ -187,7 +187,8 @@ spec:
           hostPath:
             path: "/dev"
         - name: varlog
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kadalu-sts-log-pvc
         - name: secret-volume
           secret:
             secretName: glusterquota-ssh-secret

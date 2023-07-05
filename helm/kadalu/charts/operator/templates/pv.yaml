@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: kadalu-sts-log-pv
+  namespace: {{ .Release.Namespace }}
+  labels:
+    type: kadalu-sts
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 500Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/robot_logfs/kadalu-sts"
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: "cw-node-type"
+          operator: In
+          values:
+          - "master"
+          - "hybrid"
+
+--- 
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: kadalu-ds-log-pv
+  namespace: {{ .Release.Namespace }}
+  labels:
+    type: kadalu-ds
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 500Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/robot_logfs/kadalu-ds"
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: "cw-node-type"
+          operator: In
+          values:
+          - "master"
+          - "hybrid"
