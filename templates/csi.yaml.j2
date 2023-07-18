@@ -188,7 +188,7 @@ spec:
             - containerPort: 8080
               name: http-endpoint
               protocol: TCP
-          readinessProbe:
+          livenessProbe:
             failureThreshold: 1
             httpGet:
                 path: /healthz/leader-election
@@ -248,7 +248,7 @@ spec:
             capabilities:
               add: ["CAP_SYS_ADMIN", "SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0
+          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.7
           env:
             - name: NODE_ID
               valueFrom:

@@ -37,7 +37,7 @@ spec:
                   type: string
                 pvReclaimPolicy:
                   type: string
-                  default: delete
+                  default: retain
                 volume_id:
                   type: string
                 kadalu_format:

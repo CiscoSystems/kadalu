@@ -5,6 +5,7 @@ metadata:
   name: kadalu.{{ volname }}
 provisioner: kadalu
 allowVolumeExpansion: {%- if single_pv_per_pool %} false{%- else %} true{%- endif %}
+reclaimPolicy: Retain
 parameters:
   hostvol_type: "External"
   gluster_hosts: {{ gluster_hosts }}

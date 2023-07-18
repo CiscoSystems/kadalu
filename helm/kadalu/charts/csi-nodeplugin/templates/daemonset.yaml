@@ -18,7 +18,7 @@ spec:
       serviceAccountName: kadalu-csi-nodeplugin
       containers:
         - name: csi-node-driver-registrar
-          image: docker.io/raspbernetes/csi-node-driver-registrar:2.0.1
+          image: dockerhub.cisco.com/robot-dockerprod/csi-node-driver-registrar:v2.8.0
           args:
             - "--v=5"
             - "--csi-address=$(ADDRESS)"
@@ -27,6 +27,14 @@ spec:
             preStop:
               exec:
                 command: ["/bin/sh", "-c", "rm -rf /registration/kadalu /registration/kadalu-reg.sock"]
+          livenessProbe:
+            exec:
+              command:
+              - /csi-node-driver-registrar
+              - --kubelet-registration-path={{ include "common.configs.kubeletDir" . }}/plugins/kadalu/csi.sock
+              - --mode=kubelet-registration-probe
+            initialDelaySeconds: 5
+            timeoutSeconds: 15
           env:
             - name: ADDRESS
               value: /plugin/csi.sock
@@ -47,7 +55,7 @@ spec:
             capabilities:
               add: ["SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0
+          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.7
           env:
             - name: NODE_ID
               valueFrom:
@@ -63,6 +71,8 @@ spec:
               value: {{ .Values.verbose | quote }}
             - name: CSI_ROLE
               value: "nodeplugin"
+            - name: CREATE_MOUNT_ON_VMEXEC
+              value: "True"
           volumeMounts:
             - name: plugin-dir
               mountPath: /plugin
@@ -78,6 +88,10 @@ spec:
             - name: csi-dir
               mountPath: {{ include "common.configs.kubeletDir" . }}/plugins/kubernetes.io/csi
               mountPropagation: "Bidirectional"
+            - name: kadalu-storagevol
+              mountPath: /mnt/
+            - name: glusterfs-vol
+              mountPath: /var/run/vmexec-socket/
         - name: kadalu-logging
           image: docker.io/library/busybox
           imagePullPolicy: IfNotPresent
@@ -111,3 +125,9 @@ spec:
           hostPath:
             path: {{ include "common.configs.kubeletDir" . }}/plugins/kubernetes.io/csi/
             type: DirectoryOrCreate
+        - name: kadalu-storagevol
+          hostPath:
+            path: /mnt/cw_glusterfs/kadalu
+        - name: glusterfs-vol
+          hostPath: 
+            path: /var/run/vmexec-socket/
