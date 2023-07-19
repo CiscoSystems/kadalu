@@ -55,7 +55,7 @@ spec:
             capabilities:
               add: ["SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.8
+          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.9
           env:
             - name: NODE_ID
               valueFrom:
