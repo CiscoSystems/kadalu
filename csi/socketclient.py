@@ -1,6 +1,14 @@
+"""
+Cisco crosswork - 2023
+Socket based command execution conduit implementation.
+Used to enable the execution of certain mount operations via the crosswork vmexec service, running outside of
+the kadalu container.
+"""
+
 import os
 import json
 import socket
+import time
 import uuid
 import logging
 
@@ -12,11 +20,15 @@ MOUNT_CMD = "/usr/bin/mount"
 UNMOUNT_CMD = "/usr/bin/umount"
 HOSTVOL_MOUNTDIR = "/mnt/kadalu"
 
-cmdList = ["glusterfs", "/mount", "/umount", "findmnt", "losetup"]
+# List of commands intercepted and sent to the command execution conduit
+cmdList = ["glusterfs", "/mount", "/umount", "losetup"]
 
-def connectSocket(client_socket):
-    retry_interval = 60
-    max_retries = 5
+is_debug = os.environ.get("DEBUG", "False")
+
+
+def connect_socket(client_socket):
+    retry_interval = 5
+    max_retries = 12
 
     retry_count = 0
     connected = False
@@ -25,7 +37,7 @@ def connectSocket(client_socket):
             # Attempt to connect to the server
             client_socket.connect(SOCKET_FILE_PATH)
             connected = True
-            logging.debug("Connected to the server!")
+            logging.debug("Socket connected to the vmexec!")
             break
         except ConnectionRefusedError:
             # Connection refused, wait for a while before retrying
@@ -35,14 +47,15 @@ def connectSocket(client_socket):
 
     return connected
 
-def changeLogLevel(commandList):
+
+def change_log_level(commandList):
     for i in range(len(commandList)):
         if "log-level" in commandList[i] and "DEBUG" in commandList[i][-5:]:
             commandList[i] = commandList[i][:-5] + "INFO"
     return commandList
 
 
-def parseCommand(commandList):
+def parse_command(commandList):
     if "glusterfs" in commandList[0]:
         commandList[0] = GLUSTERFS_CMD
     elif "/mount" in commandList[0]:
@@ -50,55 +63,54 @@ def parseCommand(commandList):
     elif "/umount" in commandList[0]:
         commandList[0] = UNMOUNT_CMD
 
-    commandList = changeLogLevel(commandList)
+    if is_debug == "False":
+        commandList = change_log_level(commandList)
     return " ".join(commandList)
 
-def socketClient(commandList):
-    cmd = parseCommand(commandList)
-    client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
-    json_data = json.dumps({
-        "error" : "Unable to execute command",
+def socket_client(commandList):
+    cmd = parse_command(commandList)
+
+    json_data = {
+        "error": "Unable to execute command",
         "result": 1,
-        "output" : ""
-    })
+        "output": ""
+    }
 
     logging.debug("Connecting socket")
-    is_connected = connectSocket(client_socket)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
 
-    if not is_connected:
-        logging.error("Unable to connect to the server after max retries.")
-        json_data["error"] = "Unable to connect to the server for command execution after max retries."
-    else:
-        try:
-            logging.info("Seding the command to socket server for execution")
+        is_connected = connect_socket(client_socket)
+        if not is_connected:
+            logging.error("Unable to connect to the server after max retries.")
+            json_data["error"] = "Unable to connect to the server for command execution after max retries."
+        else:
+            logging.debug("Sending the command to socket server for execution")
 
             data = {
-                "id" : str(uuid.uuid4()),
-                "commandtype" : 4,
-                "command" : cmd,
-                "hidden" : False,
-                "commandtimeout" : 100,
-                "nodelist" : [""]
+                "id": str(uuid.uuid4()),
+                "commandtype": 4,
+                "command": cmd,
+                "hidden": False,
+                "commandtimeout": 100,
+                "nodelist": [""]
             }
             json_inp = json.dumps(data)
             client_socket.sendall(json_inp.encode('utf-8'))
 
-            #receive a response from the server
+            # receive a response from the server
             response = client_socket.recv(1024).decode('utf-8')
             json_data = json.loads(response)
-        finally:
-            # Close the connection
-            client_socket.close()
-    if len(json_data['error']) != 0 :
-                raise CommandException(json_data['result'], json_data['output'], json_data['error'])
-    return (json_data["output"], json_data["error"], json_data['result'])
+    if len(json_data['error']) != 0:
+        raise CommandException(-1, cmd, json_data['error'])
+    return json_data["output"], json_data["error"], json_data['result']
 
-def executeCommand(*cmd):
+
+def execute_vmexec(*cmd):
     head = cmd[0]
     logging.info(cmd)
     if any(cmdStr in head for cmdStr in cmdList):
-        logging.info("The command is glusterfs or mount or umount or findmnt")
-        return socketClient(list(cmd))
+        return socket_client(list(cmd))
     else:
+        logging.debug("Executing command using default executioner")
         return execute(*cmd)
