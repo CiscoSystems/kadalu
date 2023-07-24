@@ -65,18 +65,21 @@ def is_gluster_mount_proc_running(volname, mountpoint):
     Check if glusterfs process is running for the given Volume name
     to confirm Glusterfs process is mounted
     """
+    logging.info(logf("check if gluster proc running", volname=volname, mountpoint=mountpoint))
+
     cmd = (
-        r'ps ax | grep -w "/opt/sbin/glusterfs" '
-        r'| grep -w "\-\-volfile\-id %s" '
-        r'| grep -w -q "%s"' % (volname, mountpoint)
+            r'ps ax | grep "/glusterfs" '
+            r'| grep -w "\-\-volfile\-id %s" '
+            r'| grep -w "%s"' % (volname, mountpoint)
     )
 
     with subprocess.Popen(cmd,
                           shell=True,
                           stderr=None,
-                          stdout=None,
+                          stdout=subprocess.PIPE,
                           universal_newlines=True) as proc:
-        proc.communicate()
+        out, err = proc.communicate()
+        logging.info(logf("check if gluster proc running", cmd=cmd, output=out, returncode=proc.returncode))
         return proc.returncode == 0
 
 

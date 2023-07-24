@@ -20,12 +20,13 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-from socketclient import execute_vmexec
+from socketclient import execute_vmexec, is_gl_mount_vmexec
 
 vmexecMnt = os.environ.get("CREATE_MOUNT_ON_VMEXEC", "False")
 logging.debug("The CREATE_MOUNT_ON_VMEXEC env value is ", vmexecMnt)
 if vmexecMnt == "True":
     execute = execute_vmexec
+    is_gluster_mount_proc_running = is_gl_mount_vmexec
 
 GLUSTERFS_CMD = "/opt/sbin/glusterfs"
 MOUNT_CMD = "/bin/mount"
@@ -900,7 +901,7 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        execute(UNMOUNT_CMD, "-l", mountpoint)
+        execute("/usr/bin/fusermount", "-u", mountpoint)
 
 
 def unmount_volume(mountpoint):
@@ -917,7 +918,7 @@ def unmount_volume(mountpoint):
                 execute(*cmd)
 
     if os.path.ismount(mountpoint):
-        execute(UNMOUNT_CMD, "-l", mountpoint)
+        execute(UNMOUNT_CMD, mountpoint)
 
 
 def expand_mounted_volume(mountpoint):
@@ -979,6 +980,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         cmd = [
             GLUSTERFS_CMD,
             "--process-name", "fuse",
+            "--fuse-mountopts=auto_unmount",
             "-l", log_file,
             "--volfile-id", volname,
             "--fs-display-name", "kadalu:%s" % volname,
@@ -1016,15 +1018,17 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
 
     volname = volume['g_volname']
 
+    logging.info(logf("handle external volume"))
+
     # Try to mount the Host Volume, handle failure if
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
         with mount_lock:
             mount_glusterfs_with_host(volname,
-                                    mountpoint,
-                                    hosts,
-                                    volume['g_options'],
-                                    is_client)
+                                      mountpoint,
+                                      hosts,
+                                      volume['g_options'],
+                                      is_client)
     else:
         logging.debug(logf(
             "Already mounted",
@@ -1085,6 +1089,7 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     cmd = [
         GLUSTERFS_CMD,
         "--process-name", "fuse",
+        "--fuse-mountopts=auto_unmount",
         "-l", "%s" % log_file,
         "--volfile-id", volname,
     ]
@@ -1094,9 +1099,9 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     if netaddr.valid_ipv6(hosts.split(',')[0]):
         cmd.extend(["--xlator-option","transport.address-family=inet6"])
         logging.info(logf(
-                "proceeding with xlator",
-                 cmd=cmd,
-                 ))
+            "proceeding with v6 xlator",
+            cmd=cmd,
+        ))
 
     for host in hosts.split(','):
         cmd.extend(["--volfile-server", host])

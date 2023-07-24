@@ -5,14 +5,6 @@ ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
 
 COPY requirements/csi-requirements.txt /tmp/
 
-ENV http_proxy http://proxy.esl.cisco.com:80
-ENV https_proxy http://proxy.esl.cisco.com:80
-ENV ftp_proxy http://proxy.esl.cisco.com:80
-ENV no_proxy 127.0.0.1,localhost,.cisco.com
-ENV FTP_PROXY http://proxy.esl.cisco.com:80
-ENV HTTP_PROXY http://proxy.esl.cisco.com:80
-ENV HTTPS_PROXY http://proxy.esl.cisco.com:80
-
 RUN python3 -m pip install $(grep -vE '^(grpcio|\s*#)' /tmp/csi-requirements.txt) --no-cache-dir && \
     python3 -m pip download --only-binary :all: --dest /tmp/ --no-cache $(grep -oE '^grpcio==.*$' /tmp/csi-requirements.txt) && \
     python3 -m pip install /tmp/*.whl --force-reinstall && \
@@ -22,13 +14,6 @@ RUN python3 -m pip install $(grep -vE '^(grpcio|\s*#)' /tmp/csi-requirements.txt
 FROM python:3.10-slim-bullseye as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV http_proxy http://proxy.esl.cisco.com:80
-ENV https_proxy http://proxy.esl.cisco.com:80
-ENV ftp_proxy http://proxy.esl.cisco.com:80
-ENV no_proxy 127.0.0.1,localhost,.cisco.com
-ENV FTP_PROXY http://proxy.esl.cisco.com:80
-ENV HTTP_PROXY http://proxy.esl.cisco.com:80
-ENV HTTPS_PROXY http://proxy.esl.cisco.com:80
 
 RUN apt-get update -yq && \
     apt-get install -y --no-install-recommends sqlite3 psmisc logrotate xfsprogs attr libtirpc3 bash inotify-tools ssh liburcu6 libgoogle-perftools4 && \
@@ -46,10 +31,9 @@ COPY --from=builder /kadalu /kadalu
 
 # venv in 'buster' img links python3 executable to '/usr/bin/python3'
 # but in 'python:slim' it's at '/usr/local/bin/python3'
-RUN ln -sfn /usr/local/bin/python3 /kadalu/bin/python3
-
-RUN mkdir -p /kadalu/volfiles /kadalu/templates
-RUN mkdir -p /var/log/glusterfs /var/run/gluster
+RUN ln -sfn /usr/local/bin/python3 /kadalu/bin/python3 && \
+  mkdir -p /kadalu/volfiles /kadalu/templates && \
+  mkdir -p /var/log/glusterfs /var/run/gluster
 
 COPY lib/kadalulib.py          /kadalu/
 COPY csi/controllerserver.py   /kadalu/
@@ -71,8 +55,8 @@ COPY csi/watch-logrotate.sh    /kadalu/
 
 COPY extras/kadalu-logrotate.conf     /kadalu/logrotate.conf
 
-RUN chmod +x /kadalu/startup.sh
-RUN chmod +x /kadalu/client_heal.sh
+RUN chmod +x /kadalu/startup.sh && \
+    chmod +x /kadalu/client_heal.sh
 
 ARG version="(unknown)"
 # Container build time (date -u '+%Y-%m-%dT%H:%M:%S.%NZ')
@@ -93,11 +77,3 @@ ENTRYPOINT ["python3", "/kadalu/start.py"]
 # uncomment below line
 # ENTRYPOINT ["tail", "-f", "/dev/null"]
 
-ENV http_proxy=""
-ENV HTTP_PROXY=""
-ENV ftp_proxy=""
-ENV FTP_PROXY=""
-ENV https_proxy=""
-ENV HTTPS_PROXY=""
-ENV no_proxy=""
-ENV NO_PROXY=""

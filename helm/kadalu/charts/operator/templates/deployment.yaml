@@ -35,7 +35,7 @@ spec:
           securityContext:
             capabilities: {}
             privileged: true
-          image: dockerhub.cisco.com/robot-dockerprod/kadalu-operator:2.0.9
+          image: dockerhub.cisco.com/robot-dockerprod/kadalu-operator:###tag###
           imagePullPolicy: {{ .Values.global.image.pullPolicy }}
           env:
             - name: WATCH_NAMESPACE
