@@ -270,6 +270,8 @@ spec:
               value: "{{ verbose }}"
             - name: CSI_ROLE
               value: "provisioner"
+            - name: CREATE_MOUNT_ON_VMEXEC
+              value: "True"
           volumeMounts:
             - name: socket-dir
               mountPath: /plugin
@@ -282,6 +284,8 @@ spec:
             - name: secret-volume
               readOnly: true
               mountPath: "/etc/secret-volume"
+            - name: glusterfs-vol
+              mountPath: /var/run/vmexec-socket/
         - name: kadalu-logging
           image: {{ images_hub }}/library/busybox
           imagePullPolicy: IfNotPresent
@@ -337,3 +341,6 @@ spec:
             secretName: glusterquota-ssh-secret
             defaultMode: 384
             optional: true
+        - name: glusterfs-vol
+          hostPath: 
+            path: /var/run/vmexec-socket/
