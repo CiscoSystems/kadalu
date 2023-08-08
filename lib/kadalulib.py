@@ -152,7 +152,7 @@ def makedirs(dirpath):
     """exist_ok=True parameter will raise exception even if directory
     exists with different attributes. Handle EEXIST gracefully."""
     try:
-        os.makedirs(dirpath)
+        os.makedirs(dirpath, mode=0o755)
     except FileExistsError:
         pass
 

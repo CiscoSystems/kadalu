@@ -20,8 +20,9 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-from socketclient import execute_vmexec, is_gl_mount_vmexec
+from vmexec_socketclient import execute_vmexec, is_gl_mount_vmexec
 
+# Cisco vmexec monkey patches
 vmexecMnt = os.environ.get("CREATE_MOUNT_ON_VMEXEC", "False")
 logging.debug("The CREATE_MOUNT_ON_VMEXEC env value is ", vmexecMnt)
 if vmexecMnt == "True":
@@ -898,7 +899,8 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        execute("/usr/bin/fusermount", "-u", mountpoint)
+        with mount_lock:
+            execute("/usr/bin/fusermount", "-u", mountpoint)
 
 
 def unmount_volume(mountpoint):
@@ -957,13 +959,13 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         return mountpoint
 
-    # Ignore if already mounted
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted (2nd try)",
-            mount=mountpoint
-        ))
-        return mountpoint
+    #    # Ignore if already mounted
+    #    if is_gluster_mount_proc_running(volname, mountpoint):
+    #        logging.debug(logf(
+    #            "Already mounted (2nd try)",
+    #            mount=mountpoint
+    #        ))
+    #        return mountpoint
 
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
