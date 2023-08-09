@@ -135,7 +135,7 @@ def execute_vmexec(*cmd):
 
 
 def is_gl_mount_vmexec(volname, mountpoint):
-    args = "/usr/bin/pgrep -f 'bin/glusterfs.*\-\-volfile-id {}.*{}'".format(volname, mountpoint)
+    args = "/usr/bin/pgrep -f bin/glusterfs.*{}.*{}".format(volname, mountpoint)
     out, err, res = execute_vmexec(args)
     logging.debug("is_gl_mount_vmexec for volume: %s, returned. out: %s err: %s res: %s", volname, out, err, res)
     return res == 0
