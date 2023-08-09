@@ -905,11 +905,23 @@ def unmount_glusterfs(mountpoint):
 
 def unmount_volume(mountpoint):
     """Unmount a Volume"""
+    device = ""
     if mountpoint.find("volumeDevices"):
         # Should remove loop device as well or else duplicate loop devices will
         # be setup everytime
         cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
-        device, _, _ = execute(*cmd)
+        try:
+            device, _, _ = execute(*cmd)
+        except CommandException as ce:
+            if ce.ret == 1:
+                logging.error(logf(
+                    "Mount Point not found",
+                    mount=mountpoint
+                ))
+
+            else:
+                raise
+
         if match := re.search(r'loop\d+', device):
             loop = match.group(0)
             cmd = ["losetup", "-d", f"/dev/{loop}"]
@@ -959,13 +971,13 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         return mountpoint
 
-    #    # Ignore if already mounted
-    #    if is_gluster_mount_proc_running(volname, mountpoint):
-    #        logging.debug(logf(
-    #            "Already mounted (2nd try)",
-    #            mount=mountpoint
-    #        ))
-    #        return mountpoint
+    # Ignore if already mounted
+    if is_gluster_mount_proc_running(volname, mountpoint):
+        logging.debug(logf(
+            "Already mounted (2nd try)",
+            mount=mountpoint
+        ))
+        return mountpoint
 
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)

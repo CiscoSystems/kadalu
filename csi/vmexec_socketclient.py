@@ -22,7 +22,7 @@ MOUNT_CMD = "/usr/bin/mount"
 UNMOUNT_CMD = "/usr/bin/umount"
 
 # List of commands intercepted and sent to the command execution conduit
-cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "/bin/sh", "findmnt", "/usr/bin/pgrep"]
+cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "pgrep"]
 
 is_debug = os.environ.get("DEBUG", "False")
 
@@ -135,7 +135,7 @@ def execute_vmexec(*cmd):
 
 
 def is_gl_mount_vmexec(volname, mountpoint):
-    args = "/usr/bin/pgrep -f bin/glusterfs.*{}.*{}".format(volname, mountpoint)
-    out, err, res = execute_vmexec(args)
+    args = "bin/glusterfs.*{}.*{}".format(volname, mountpoint)
+    out, err, res = execute_vmexec("/usr/bin/pgrep", "-c", "-f", args)
     logging.debug("is_gl_mount_vmexec for volume: %s, returned. out: %s err: %s res: %s", volname, out, err, res)
-    return res == 0
+    return int(out) > 0 and res == 0
