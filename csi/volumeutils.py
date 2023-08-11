@@ -881,7 +881,7 @@ def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
 
         # Bind mount loop device to target_path, stage_path may not be needed
         makedirs(os.path.dirname(mountpoint))
-        Path(mountpoint).touch(mode=0o777)
+        Path(mountpoint).touch(mode=0o755)
         execute(MOUNT_CMD, "--bind", loop, mountpoint)
         return True
 
