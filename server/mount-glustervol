@@ -19,7 +19,7 @@ client_volfile_path = os.path.join(VOLFILES_DIR, "%s.client.vol" % volname)
 
 generate_client_volfile(data, client_volfile_path)
 
-os.makedirs("/mnt/%s" % volname, mode=0o777)
+os.makedirs("/mnt/%s" % volname, mode=0o755)
 
 os.execv(
     "/opt/sbin/glusterfs",

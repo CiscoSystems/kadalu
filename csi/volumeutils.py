@@ -891,7 +891,7 @@ def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
     else:
         execute(MOUNT_CMD, "--bind", pvpath, mountpoint)
 
-    os.chmod(mountpoint, 0o777)
+    os.chmod(mountpoint, 0o755)
     return True
 
 
