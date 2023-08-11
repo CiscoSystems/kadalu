@@ -20,8 +20,9 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-from socketclient import execute_vmexec, is_gl_mount_vmexec
+from vmexec_socketclient import execute_vmexec, is_gl_mount_vmexec
 
+# Cisco vmexec monkey patches
 vmexecMnt = os.environ.get("CREATE_MOUNT_ON_VMEXEC", "False")
 logging.debug("The CREATE_MOUNT_ON_VMEXEC env value is ", vmexecMnt)
 if vmexecMnt == "True":
@@ -901,21 +902,33 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        execute("/usr/bin/fusermount", "-u", mountpoint)
+        with mount_lock:
+            execute("/usr/bin/fusermount", "-u", mountpoint)
 
 
 def unmount_volume(mountpoint):
     """Unmount a Volume"""
-    if mountpoint.find("volumeDevices") != -1:
+    device = ""
+    if mountpoint.find("volumeDevices"):
         # Should remove loop device as well or else duplicate loop devices will
         # be setup everytime
-        if os.path.exists(mountpoint):
-            cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
+        cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
+        try:
             device, _, _ = execute(*cmd)
-            if match := re.search(r'loop\d+', device):
-                loop = match.group(0)
-                cmd = ["losetup", "-d", f"/dev/{loop}"]
-                execute(*cmd)
+        except CommandException as ce:
+            if ce.ret == 1:
+                logging.error(logf(
+                    "Mount Point not found",
+                    mount=mountpoint
+                ))
+
+            else:
+                raise
+
+        if match := re.search(r'loop\d+', device):
+            loop = match.group(0)
+            cmd = ["losetup", "-d", f"/dev/{loop}"]
+            execute(*cmd)
 
     if os.path.ismount(mountpoint):
         execute(UNMOUNT_CMD, mountpoint)

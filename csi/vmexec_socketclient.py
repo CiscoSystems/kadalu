@@ -8,9 +8,11 @@ the kadalu container.
 import os
 import json
 import socket
+import threading
 import time
 import uuid
 import logging
+from collections import defaultdict
 
 from kadalulib import (execute, CommandException)
 
@@ -20,9 +22,24 @@ MOUNT_CMD = "/usr/bin/mount"
 UNMOUNT_CMD = "/usr/bin/umount"
 
 # List of commands intercepted and sent to the command execution conduit
-cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "/bin/sh", "findmnt"]
+cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "pgrep"]
 
 is_debug = os.environ.get("DEBUG", "False")
+
+
+# TODO - Should use the cleanup once volumes are removed
+class volume_lock_manager:
+    def __init__(self):
+        self.locks = defaultdict(threading.Lock)
+
+    def get_lock(self, name):
+        return self.locks[name]
+
+    def del_lock(self, name):
+        self.locks.pop(name, None)
+
+# Create a named volume lock manager
+lock_manager = volume_lock_manager()
 
 
 def connect_socket(client_socket):
@@ -50,6 +67,7 @@ def connect_socket(client_socket):
 def change_log_level(commandList):
     for i in range(len(commandList)):
         if "log-level" in commandList[i] and "DEBUG" in commandList[i][-5:]:
+            logging.warning("Changing command debug level from DEBUG to INFO")
             commandList[i] = commandList[i][:-5] + "INFO"
     return commandList
 
@@ -64,11 +82,12 @@ def substitute_cmd(commandList):
 
     if is_debug == "False":
         commandList = change_log_level(commandList)
-    return " ".join(commandList)
+    return commandList
 
 
 def socket_client(commandList):
     cmd = substitute_cmd(commandList)
+    cmd = " ".join(cmd)
 
     json_data = {
         "error": "Unable to execute command",
@@ -81,7 +100,7 @@ def socket_client(commandList):
 
         is_connected = connect_socket(client_socket)
         if not is_connected:
-            logging.error("Unable to connect to the server after max retries.")
+            logging.error("Unable to connect to the vmexec server after max retries.")
             json_data["error"] = "Unable to connect to the server for command execution after max retries."
         else:
             logging.debug("Sending the command to socket server for execution")
@@ -102,7 +121,7 @@ def socket_client(commandList):
             json_data = json.loads(response)
     if len(json_data['error']) != 0:
         raise CommandException(-1, cmd, json_data['error'])
-    return json_data["output"], json_data["error"], int(json_data['result'])
+    return json_data['output'], json_data['error'], int(json_data['result'])
 
 
 def execute_vmexec(*cmd):
@@ -116,8 +135,7 @@ def execute_vmexec(*cmd):
 
 
 def is_gl_mount_vmexec(volname, mountpoint):
-    args = "ps ax | grep bin/glusterfs | grep {} | grep -w {}".format(volname, mountpoint)
-
-    out, err, res = execute_vmexec("/bin/sh -c", args)
-    logging.info("is_gl_mount_vmexec returned. out %s err %s res %s", out, err, res)
-    return res == 0
+    args = "bin/glusterfs.*{}.*{}".format(volname, mountpoint)
+    out, err, res = execute_vmexec("/usr/bin/pgrep", "-c", "-f", args)
+    logging.debug("is_gl_mount_vmexec for volume: %s, returned. out: %s err: %s res: %s", volname, out, err, res)
+    return int(out) > 0 and res == 0
