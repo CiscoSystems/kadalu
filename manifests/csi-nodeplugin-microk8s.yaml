@@ -80,7 +80,7 @@ spec:
             capabilities:
               add: ["SYS_ADMIN"]
             allowPrivilegeEscalation: true
-          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0
+          image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi:###tag###
           env:
             - name: NODE_ID
               valueFrom:
@@ -112,7 +112,7 @@ spec:
               mountPath: /var/snap/microk8s/common/var/lib/kubelet/plugins/kubernetes.io/csi
               mountPropagation: "Bidirectional"
         - name: kadalu-logging
-          image: docker.io/library/busybox
+          image: docker.io/library/busybox:latest
           command: ["/bin/sh"]
           args: ["-c", "while true; do logcnt=$(/bin/ls /var/log/gluster/ | wc -l); if [ ${logcnt} -gt 0 ]; then break; fi; sleep 5; done; tail -F /var/log/gluster/*.log"]
           volumeMounts:

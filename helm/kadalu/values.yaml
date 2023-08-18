@@ -4,8 +4,8 @@
 
 global:
   image:
-    registry: 'docker.io'
-    repository: 'kadalu'
+    registry: 'dockerhub.cisco.com'
+    repository: 'robot-dockerprod'
     pullPolicy: 'IfNotPresent'
   kubeletDir: ''
   kubernetesDistro: 'kubernetes'

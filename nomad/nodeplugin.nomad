@@ -72,7 +72,7 @@ job "kadalu-csi-nodeplugin" {
       }
 
       config {
-        image = "dockerhub.cisco.com/robot-dockerprod/kadalu-csi-driver:2.0.0"
+        image = "dockerhub.cisco.com/robot-dockerprod/kadalu-csi:###tag###"
 
         privileged = true
 

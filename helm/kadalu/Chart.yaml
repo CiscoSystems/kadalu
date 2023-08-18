@@ -4,7 +4,7 @@ icon: https://kadalu.io/static/css/logo.png
 description: Contains chart for deploying Kadalu Operator
 type: application
 # Value of 'version' will be replaced with correct version on part of release
-version: 1.0.0
+version: 0.0.0-0
 dependencies:
   - name: common
     repository: file://charts/common
