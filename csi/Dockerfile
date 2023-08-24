@@ -11,7 +11,7 @@ RUN python3 -m pip install $(grep -vE '^(grpcio|\s*#)' /tmp/csi-requirements.txt
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/csi-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM python:3.10-slim-bullseye as prod
+FROM dockerhub.cisco.com/robot-dockerprod/python:3.10-slim-bullseye as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
 

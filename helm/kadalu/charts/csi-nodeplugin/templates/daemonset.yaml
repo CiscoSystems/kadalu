@@ -61,14 +61,18 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
             - name: CSI_ENDPOINT
               value: unix://plugin/csi.sock
             - name: KADALU_VERSION
-              value: {{ include "common.version" . | quote }}
+              value: {{include "common.version" . | quote}}
             - name: K8S_DIST
-              value: {{ .Values.global.kubernetesDistro | quote }}
+              value: {{.Values.global.kubernetesDistro | quote}}
             - name: VERBOSE
-              value: {{ .Values.verbose | quote }}
+              value: {{.Values.verbose | quote}}
             - name: CSI_ROLE
               value: "nodeplugin"
             - name: CREATE_MOUNT_ON_VMEXEC

@@ -9,6 +9,8 @@ import re
 import shutil
 import threading
 import time
+from random import sample
+
 import netaddr
 from errno import ENOTCONN
 from pathlib import Path
@@ -38,6 +40,7 @@ RESERVED_SIZE_PERCENTAGE = 10
 HOSTVOL_MOUNTDIR = "/mnt"
 VOLFILES_DIR = "/kadalu/volfiles"
 VOLINFO_DIR = "/var/lib/gluster"
+HOST_IP = os.environ.get('HOST_IP')
 
 statfile_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
 mount_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
@@ -1007,7 +1010,13 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         # Use volfile server of bricks/storage_unit processes,
         # instead of volfile paths. Since now brick processes
         # supports serving of client volfiles.
-        for host in hosts:
+        host_set = set(hosts)
+        if HOST_IP in host_set:
+            # Make the local host be the first entry for the mount, if viable
+            cmd.extend(["--volfile-server", HOST_IP])
+            host_set.remove(HOST_IP)
+        random_hosts = sample(host_set, len(host_set))
+        for host in random_hosts:
             cmd.extend(["--volfile-server", host])
 
         try:
@@ -1107,21 +1116,27 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
         "--volfile-id", volname,
     ]
     ## on server component we can mount glusterfs with client-pid
-    #if not is_client:
+    # if not is_client:
     #    cmd.extend(["--client-pid", "-14"])
     if netaddr.valid_ipv6(hosts.split(',')[0]):
-        cmd.extend(["--xlator-option","transport.address-family=inet6"])
+        cmd.extend(["--xlator-option", "transport.address-family=inet6"])
         logging.info(logf(
             "proceeding with v6 xlator",
             cmd=cmd,
         ))
 
-    for host in hosts.split(','):
+    host_set = set(hosts.split(','))
+    if HOST_IP in host_set:
+        # Make the local host be the first entry for the mount, if viable
+        cmd.extend(["--volfile-server", HOST_IP])
+        host_set.remove(HOST_IP)
+    random_hosts = sample(host_set, len(host_set))
+    for host in random_hosts:
         cmd.extend(["--volfile-server", host])
         logging.info(logf(
-        "gluster-kadalu hostname",
-         cmd=cmd,
-         ))
+            "gluster-kadalu hostname",
+            cmd=cmd,
+        ))
 
     g_ops = []
     if options:
