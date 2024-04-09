@@ -12,6 +12,7 @@ import uuid
 
 import urllib3
 from jinja2 import Template
+import threading
 
 from kadalulib import CommandException
 from kadalulib import execute as lib_execute
@@ -50,6 +51,8 @@ DELETE_CMD = "delete"
 PATCH_CMD = "patch"
 
 NODE_PLUGIN = "kadalu-csi-nodeplugin"
+
+lock = threading.Lock()
 
 def template(filename, **kwargs):
     """Substitute the template with provided fields"""
@@ -429,7 +432,7 @@ def update_config_map(core_v1_client, obj):
                       volname=volname))
 
 
-def deploy_server_pods(obj):
+def deploy_server_pods(obj, core_v1_client=None):
     """
     Deploy server pods depending on type of Hosting
     Volume and other options specified
@@ -440,6 +443,13 @@ def deploy_server_pods(obj):
     pv_reclaim_policy = obj["spec"].get("pvReclaimPolicy", "delete")
     tolerations = obj["spec"].get("tolerations")
     docker_user = os.environ.get("DOCKER_USER", "kadalu")
+
+    pods = core_v1_client.list_namespaced_pod(namespace=NAMESPACE)
+
+    for pod in pods.items:
+        if pod.metadata.name.startswith("server-" + volname + "-"):
+            logging.info(f"Server pod already exists for {volname} Skipping the deployment")
+            return
 
     shd_required = False
     if voltype in (VOLUME_TYPE_REPLICA_3, VOLUME_TYPE_REPLICA_2,
@@ -895,6 +905,8 @@ def watch_stream(core_v1_client, k8s_client):
                                   "v1alpha1",
                                   "kadalustorages",
                                   resource_version=resource_version):
+     with lock:
+
         obj = event["object"]
         operation = event['type']
         spec = obj.get("spec")
