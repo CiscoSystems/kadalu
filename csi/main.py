@@ -5,7 +5,6 @@ import logging
 import os
 import time
 from concurrent import futures
-
 import csi_pb2_grpc
 import grpc
 from controllerserver import ControllerServer

@@ -1,7 +1,6 @@
 """
 Utility functions for Volume management
 """
-
 import json
 import logging
 import os
@@ -10,7 +9,6 @@ import shutil
 import threading
 import time
 from random import sample
-
 import netaddr
 from errno import ENOTCONN
 from pathlib import Path
@@ -257,6 +255,18 @@ def mount_and_select_hosting_volume(pv_hosting_volumes, required_size):
 
     return None
 
+def create_volume_if_not_exists(voltype, hostvol_mnt, volname, size):
+    """
+    Create a volume only if it does not already exist to ensure idempotency.
+    """
+    volpath_full = os.path.join(hostvol_mnt, get_volume_path(voltype, get_volname_hash(volname), volname))
+    if os.path.exists(volpath_full):
+        logging.info(f"Volume {volname} already exists. Skipping creation.")
+        return Volume(volname=volname, voltype=voltype, hostvol=hostvol_mnt, size=size)
+
+    # Proceed with volume creation
+    return create_block_volume(voltype, hostvol_mnt, volname, size)
+
 
 def create_block_volume(pvtype, hostvol_mnt, volname, size):
     """Create virtual block volume"""
@@ -267,6 +277,13 @@ def create_block_volume(pvtype, hostvol_mnt, volname, size):
         "Volume hash",
         volhash=volhash
     ))
+    if os.path.exists(volpath_full):
+        logging.info(f"Volume {volname} already exists. Skipping creation.")
+        return Volume(volname=volname, voltype=pvtype, hostvol=os.path.basename(hostvol_mnt), size=size, volpath=volpath)
+    # Ensure there is enough space before creating the volume
+    if not is_hosting_volume_free(os.path.basename(hostvol_mnt), size):
+        logging.error("Insufficient space available to create the volume.")
+        return None
 
     # Check for mount availability before creating virtblock volume
     retry_errors(os.statvfs, [hostvol_mnt], [ENOTCONN])
@@ -1039,37 +1056,42 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
 
     logging.info(logf("handle external volume"))
 
-    # Try to mount the Host Volume, handle failure if
-    # already mounted
+    # Ensure that only one thread/process can attempt to mount at a time
+    with mount_lock:
+        # Double-check if volume is mounted to handle race conditions
+        if not is_gluster_mount_proc_running(volname, mountpoint):
+            try:
+                mount_glusterfs_with_host(volname, mountpoint, hosts, volume['g_options'], is_client)
+            except CommandException as err:
+                errmsg = "Failed to mount volume"
+                logging.error(logf(errmsg, error=err))
+                raise
+        else:
+            logging.debug(logf("Already mounted", mount=mountpoint))
+            return mountpoint
+
+    # Check if the volume is successfully mounted before proceeding
     if not is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
-            mount_glusterfs_with_host(volname,
-                                      mountpoint,
-                                      hosts,
-                                      volume['g_options'],
-                                      is_client)
-    else:
-        logging.debug(logf(
-            "Already mounted",
-            mount=mountpoint
-        ))
-        return mountpoint
+        errmsg = "Expected volume to be mounted but it's not"
+        logging.error(logf(errmsg))
+        return
 
     use_gluster_quota = False
-    if (os.path.isfile("/etc/secret-volume/ssh-privatekey")
-        and "SECRET_GLUSTERQUOTA_SSH_USERNAME" in os.environ):
+    if (os.path.isfile("/etc/secret-volume/ssh-privatekey") and
+            "SECRET_GLUSTERQUOTA_SSH_USERNAME" in os.environ):
         use_gluster_quota = True
+
     secret_private_key = "/etc/secret-volume/ssh-privatekey"
     secret_username = os.environ.get('SECRET_GLUSTERQUOTA_SSH_USERNAME', None)
 
-    # SSH into only first reachable host in volume['g_host'] entry
+    # SSH into only the first reachable host in volume['g_host'] entry
     g_host = reachable_host(hosts)
 
     if g_host is None:
         logging.error(logf("All hosts are not reachable"))
         return
 
-    if use_gluster_quota is False:
+    if not use_gluster_quota:
         logging.debug(logf("Do not set quota-deem-statfs"))
     else:
         logging.debug(logf("Set quota-deem-statfs for gluster directory Quota"))
@@ -1077,22 +1099,25 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
             "ssh",
             "-oStrictHostKeyChecking=no",
             "-i",
-            "%s" % secret_private_key,
-            "%s@%s" % (secret_username, g_host),
+            secret_private_key,
+            f"{secret_username}@{g_host}",
             "sudo",
             "gluster",
             "volume",
             "set",
-            "%s" % volume['g_volname'],
+            volname,
             "quota-deem-statfs",
             "on"
         ]
         try:
             execute(*quota_deem_cmd)
+            # Optionally verify that the quota setting was applied
+            # ... verification logic here ...
         except CommandException as err:
             errmsg = "Unable to set quota-deem-statfs via ssh"
             logging.error(logf(errmsg, error=err))
-            raise err
+            raise
+
     return mountpoint
 
 
