@@ -18,16 +18,15 @@ UNMOUNT_CMD = "/bin/umount"
 
 # noqa # pylint: disable=too-many-locals
 # noqa # pylint: disable=too-many-statements
-
 class NodeServer(csi_pb2_grpc.NodeServicer):
     """
     NodeServer object is responsible for handling host
     volume mount and PV mounts.
     Ref:https://github.com/container-storage-interface/spec/blob/master/spec.md
     """
-    mount_lock = threading.Lock()
-    def NodePublishVolume(self, request, context):
-        start_time = time.time()
+mount_lock = threading.Lock()
+def NodePublishVolume(self, request, context):
+    start_time = time.time()
     errmsg = ""
 
     # Perform request validation
@@ -57,6 +56,14 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
     mntdir = os.path.join(HOSTVOL_MOUNTDIR, hostvol)
     pvpath_full = os.path.join(mntdir, pvpath)
 
+    volume = {
+        'name': hostvol,
+        'g_volname': gvolname,
+        'g_host': gserver,
+        'g_options': options,
+        'type': voltype,
+    }
+
     logging.debug(logf(
         "Received a valid mount request",
         request=request,
@@ -68,7 +75,7 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
 
     # Synchronize mounting operations to prevent race conditions
     with mount_lock:
-        # Check if the target path is already mounted
+        # Check if the target path is already mounte
         if not os.path.ismount(request.target_path):
             # Mount the hosting volume if not already mounted
             mount_glusterfs(volume, mntdir, True)
