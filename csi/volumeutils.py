@@ -1019,6 +1019,13 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         try:
             (_, err, _) = execute(*cmd)
         except CommandException as err:
+            # check if the mountpoint is already mounted
+            if err.ret == 32 & is_gluster_mount_proc_running(volname, mountpoint):
+                logging.debug(logf(
+                    "Already mounted",
+                    mount=mountpoint
+                ))
+                return mountpoint
             logging.error(logf(
                 "error to execute command",
                 volume=volume,
