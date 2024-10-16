@@ -18,7 +18,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -yq && \
     apt-get install -y --no-install-recommends sqlite3 psmisc logrotate xfsprogs attr libtirpc3 bash inotify-tools ssh liburcu6 libgoogle-perftools4 && \
     apt-get -y clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    python3 -m pip install netaddr && \
+    python3 -m pip install xxhash && \
+    python3 -m pip install uvicorn && \
+    python3 -m pip install grpcio && \
+    python3 -m pip install  fastapi
+
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
 

@@ -19,7 +19,14 @@ RUN apt-get update -yq && \
     apt-get -y clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install netaddr && python3 -m pip install xxhash
+RUN python3 -m pip install netaddr && python3 -m pip install xxhash && \
+    python3 -m pip install urllib3 && \
+    python3 -m pip install kubernetes && \
+    python3 -m pip install  utils && \
+    python3 -m pip install  prometheus-client && \
+    python3 -m pip install  uvicorn && \
+    python3 -m pip install  fastapi
+
 
 ENV PATH="/kadalu/bin:$PATH"
 
