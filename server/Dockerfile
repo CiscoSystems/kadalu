@@ -29,6 +29,8 @@ RUN apt-get update -yq && \
     apt-get -y clean && \
     rm -rf /var/lib/apt/lists/*
 
+RUN python3 -m pip install netaddr && python3 -m pip install xxhash
+
 RUN curl -fsSL https://github.com/kadalu/volgen/releases/latest/download/install.sh | bash -x
 
 RUN mkdir -p /kadalu/templates /kadalu/volfiles
