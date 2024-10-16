@@ -23,7 +23,8 @@ RUN apt-get update -yq && \
     python3 -m pip install xxhash && \
     python3 -m pip install uvicorn && \
     python3 -m pip install grpcio && \
-    python3 -m pip install  fastapi
+    python3 -m pip install  fastapi && \
+    python3 -m pip install protobuf==3.20.3
 
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
