@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 from random import sample
+import subprocess
 
 import netaddr
 from errno import ENOTCONN
@@ -940,56 +941,27 @@ def expand_mounted_volume(mountpoint):
         execute("xfs_growfs", "-d", mountpoint)
 
 
-def mount_glusterfs(volume, mountpoint, is_client=False):
-    """Mount Glusterfs Volume"""
 
-    data = {}
-    hosts = []
+def mount_glusterfs(volume, mountpoint, is_client=False):
+    """
+    Mount Glusterfs Volume with enhanced locking to avoid duplicate mounts.
+    """
     volname = volume["name"]
 
-    if volume['type'] == 'External':
-        return handle_external_volume(volume, mountpoint, is_client, volume['g_host'])
-
-    with open(os.path.join(VOLINFO_DIR, "%s.info" % volname)) as info_file:
-        data = json.load(info_file)
-    for brick in data["bricks"]:
-        hosts.append(brick["node"])
-
-    try:
-        if not is_server_pod_reachable(hosts, 24007, 20):
-            err = "Cannot establish socket connection with none of the hosts!"
-            cmd = "sock.connect(hosts, 24007)"
-            raise CommandException(-1, cmd, err)
-    except CommandException:
-        logging.error(logf(
-            "None of the server pods are reachable",
-            volume=volume
-        ))
-
-    # Ignore if already glusterfs process running for that volume
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted",
-            mount=mountpoint
-        ))
-        return mountpoint
-
-    # Ignore if already mounted
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted (2nd try)",
-            mount=mountpoint
-        ))
-        return mountpoint
-
-    if not os.path.exists(mountpoint):
-        makedirs(mountpoint)
-
+    # Comprehensive lock to protect against concurrent mount attempts
     with mount_lock:
-        # Fix the log, so we can check it out later
-        # log_file = "/var/log/gluster/%s.log" % mountpoint.replace("/", "-")
+        # Double-check if already mounted
+        if is_gluster_mount_proc_running(volname, mountpoint):
+            logging.debug(logf("Already mounted, skipping", mount=mountpoint))
+            return mountpoint
+
+        # Ensure mount directory exists
+        if not os.path.exists(mountpoint):
+            makedirs(mountpoint)
+
         log_file = "/var/log/gluster/gluster.log"
 
+        # Prepare the mount command
         cmd = [
             GLUSTERFS_CMD,
             "--process-name", "fuse",
@@ -1000,34 +972,56 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             mountpoint
         ]
 
-        ## required for 'simple-quota'
+        # For quota enforcement, if applicable
         if not is_client:
             cmd.extend(["--client-pid", "-14"])
 
-        # Use volfile server of bricks/storage_unit processes,
-        # instead of volfile paths. Since now brick processes
-        # supports serving of client volfiles.
+        # Fetch brick nodes
+        data = {}
+        hosts = []
+        with open(os.path.join(VOLINFO_DIR, f"{volname}.info")) as info_file:
+            data = json.load(info_file)
+        for brick in data.get("bricks", []):
+            hosts.append(brick["node"])
+
+        # Confirm reachable hosts before mounting
+        if not is_server_pod_reachable(hosts, 24007, 20):
+            errmsg = f"No reachable hosts found for volume {volname}!"
+            logging.error(logf(errmsg, hosts=hosts))
+            raise Exception(errmsg)
+
+        # Prioritize local host IP if available
         host_set = set(hosts)
         if HOST_IP in host_set:
-            # Make the local host be the first entry for the mount, if viable
             cmd.extend(["--volfile-server", HOST_IP])
             host_set.remove(HOST_IP)
-        random_hosts = sample(host_set, len(host_set))
-        for host in random_hosts:
+        for host in sample(host_set, len(host_set)):
             cmd.extend(["--volfile-server", host])
 
+        # Execute mount operation safely
         try:
-            (_, err, _) = execute(*cmd)
-        except CommandException as err:
-            logging.error(logf(
-                "error to execute command",
-                volume=volume,
-                cmd=cmd,
-                error=format(err)
-            ))
-            raise err
+            execute(*cmd)
+            logging.info(logf("Mounted successfully", mountpoint=mountpoint, cmd=cmd))
+        except CommandException as exc:
+            if exc.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
+             logging.error(logf("Failed to mount", mountpoint=mountpoint, error=str(exc)))
+            else:
+                logging.error(logf("Failed to mount", mountpoint=mountpoint, error=str(exc)))
+                raise exc
 
     return mountpoint
+def verify_mount(mountpoint):
+    """
+    Explicitly verify mount health using system 'stat' command.
+    Returns True if mount is active and healthy, False otherwise.
+    """
+    try:
+        subprocess.check_output(['stat', mountpoint], stderr=subprocess.STDOUT)
+        logging.debug(logf("Mount verification successful", mountpoint=mountpoint))
+        return True
+    except subprocess.CalledProcessError as exc:
+        logging.error(logf("Mount verification failed", mountpoint=mountpoint, error=exc.output.decode()))
+        return False
 
 
 def handle_external_volume(volume, mountpoint, is_client, hosts):
