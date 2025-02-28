@@ -9,7 +9,7 @@ import csi_pb2
 import csi_pb2_grpc
 import grpc
 from kadalulib import logf
-from volumeutils import mount_glusterfs, mount_volume, unmount_volume, verify_mount
+from volumeutils import mount_glusterfs, mount_volume, unmount_volume
 
 HOSTVOL_MOUNTDIR = "/mnt/cw_glusterfs/kadalu"
 GLUSTERFS_CMD = "/opt/sbin/glusterfs"
@@ -26,132 +26,100 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
     Ref:https://github.com/container-storage-interface/spec/blob/master/spec.md
     """
     def NodePublishVolume(self, request, context):
-     start_time = time.time()
-     if not request.volume_id:
-        errmsg = "Volume ID is empty and must be provided"
-        logging.error(errmsg)
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-        return csi_pb2.NodePublishVolumeResponse()
+        start_time = time.time()
+        if not request.volume_id:
+            errmsg = "Volume ID is empty and must be provided"
+            logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            return csi_pb2.NodePublishVolumeResponse()
 
-     if not request.target_path:
-        errmsg = "Target path is empty and must be provided"
-        logging.error(errmsg)
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-        return csi_pb2.NodePublishVolumeResponse()
+        if not request.target_path:
+            errmsg = "Target path is empty and must be provided"
+            logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            return csi_pb2.NodePublishVolumeResponse()
 
-     if not request.volume_capability:
-        errmsg = "Volume capability is empty and must be provided"
-        logging.error(errmsg)
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-        return csi_pb2.NodePublishVolumeResponse()
+        if not request.volume_capability:
+            errmsg = "Volume capability is empty and must be provided"
+            logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            return csi_pb2.NodePublishVolumeResponse()
 
-     if not request.volume_context:
-        errmsg = "Volume context is empty and must be provided"
-        logging.error(errmsg)
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-        return csi_pb2.NodePublishVolumeResponse()
+        if not request.volume_context:
+            errmsg = "Volume context is empty and must be provided"
+            logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            return csi_pb2.NodePublishVolumeResponse()
 
-     hostvol = request.volume_context.get("hostvol", "")
-     pvpath = request.volume_context.get("path", "")
-     pvtype = request.volume_context.get("pvtype", "")
-     voltype = request.volume_context.get("type", "")
-     gserver = request.volume_context.get("gserver", None)
-     gvolname = request.volume_context.get("gvolname", None)
-     options = request.volume_context.get("options", None)
+        hostvol = request.volume_context.get("hostvol", "")
+        pvpath = request.volume_context.get("path", "")
+        pvtype = request.volume_context.get("pvtype", "")
+        voltype = request.volume_context.get("type", "")
+        gserver = request.volume_context.get("gserver", None)
+        gvolname = request.volume_context.get("gvolname", None)
+        options = request.volume_context.get("options", None)
 
-     mntdir = os.path.join(HOSTVOL_MOUNTDIR, hostvol)
+        mntdir = os.path.join(HOSTVOL_MOUNTDIR, hostvol)
 
-     pvpath_full = os.path.join(mntdir, pvpath)
+        pvpath_full = os.path.join(mntdir, pvpath)
 
-     logging.debug(logf(
-        "Received a valid mount request",
-        request=request,
-        voltype=voltype,
-        hostvol=hostvol,
-        pvpath=pvpath,
-        pvtype=pvtype,
-        pvpath_full=pvpath_full
-    ))
-
-     volume = {
-        'name': hostvol,
-        'g_volname': gvolname,
-        'g_host': gserver,
-        'g_options': options,
-        'type': voltype,
-    }
-
-     max_retries = 5
-     retry_interval = 5  # seconds
-     retry_count = 0
-     mounted_successfully = False
-
-     while retry_count < max_retries and not mounted_successfully:
-        try:
-            if verify_mount(mntdir):
-                mounted_successfully = True
-                logging.info(logf("Mount verified and successful", mountpoint=mntdir))
-            else:
-                mount_glusterfs(volume, mntdir, True)
-                if verify_mount(mntdir):
-                    mounted_successfully = True
-                    logging.info(logf("Mount verified and successful", mountpoint=mntdir))
-                else:
-                  raise Exception("Mount verification failed.")
-        except Exception as e:
-            retry_count += 1
-            logging.warning(logf(
-                "Retrying mount due to failure",
-                attempt=retry_count,
-                max_attempts=max_retries,
-                mountpoint=mntdir,
-                error=str(e)
-            ))
-            time.sleep(retry_interval)
-
-     if not mounted_successfully:
-        errmsg = f"All {max_retries} retry attempts to mount volume failed."
-        logging.error(logf(errmsg, mountpoint=mntdir))
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.INTERNAL)
-        return csi_pb2.NodePublishVolumeResponse()
-
-     if voltype == "External":
         logging.debug(logf(
-            "Mounted Volume for PV",
-            volume=volume,
-            mntdir=mntdir
-        ))
-        # return csi_pb2.NodePublishVolumeResponse()
-
-     logging.debug(logf(
-        "Mounted Hosting Volume",
-        pv=request.volume_id,
-        hostvol=hostvol,
-        mntdir=mntdir
-    ))
-    # Mount the PV
-    # TODO: Handle Volume capability mount flags
-     if mount_volume(pvpath_full, request.target_path, pvtype, fstype=None):
-        logging.info(logf(
-            "Mounted PV",
-            volume=request.volume_id,
+            "Received a valid mount request",
+            request=request,
+            voltype=voltype,
+            hostvol=hostvol,
             pvpath=pvpath,
             pvtype=pvtype,
-            hostvol=hostvol,
-            target_path=request.target_path,
-            duration_seconds=time.time() - start_time
+            pvpath_full=pvpath_full
         ))
-     else:
-        errmsg = "Unable to bind PV to target path"
-        logging.error(errmsg)
-        context.set_details(errmsg)
-        context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
-     return csi_pb2.NodePublishVolumeResponse()
+
+        volume = {
+            'name': hostvol,
+            'g_volname': gvolname,
+            'g_host': gserver,
+            'g_options': options,
+            'type': voltype,
+        }
+
+        mount_glusterfs(volume, mntdir, True)
+
+        if voltype == "External":
+            logging.debug(logf(
+                "Mounted Volume for PV",
+                volume=volume,
+                mntdir=mntdir
+            ))
+            # return csi_pb2.NodePublishVolumeResponse()
+
+        logging.debug(logf(
+            "Mounted Hosting Volume",
+            pv=request.volume_id,
+            hostvol=hostvol,
+            mntdir=mntdir
+        ))
+        # Mount the PV
+        # TODO: Handle Volume capability mount flags
+        if mount_volume(pvpath_full, request.target_path, pvtype, fstype=None):
+            logging.info(logf(
+                "Mounted PV",
+                volume=request.volume_id,
+                pvpath=pvpath,
+                pvtype=pvtype,
+                hostvol=hostvol,
+                target_path=request.target_path,
+                duration_seconds=time.time() - start_time
+            ))
+        else:
+            errmsg = "Unable to bind PV to target path"
+            logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+        return csi_pb2.NodePublishVolumeResponse()
+
 
     def NodeUnpublishVolume(self, request, context):
         # TODO: Validation and handle target_path failures
