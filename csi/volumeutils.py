@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 from random import sample
+import subprocess
 
 import netaddr
 from errno import ENOTCONN
@@ -133,7 +134,7 @@ def filter_supported_pvtype(volume, filters):
         return volume
 
     if f_supported_pvtype is not None \
-       and f_supported_pvtype != supported_pvtype:
+            and f_supported_pvtype != supported_pvtype:
         return None
 
     return volume
@@ -862,6 +863,10 @@ def volume_list(voltype=None):
 
 def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
     """Mount a Volume"""
+    # Check if the volume is already mounted
+    if os.path.ismount(mountpoint):
+        logging.info(logf("Volume is already mounted", mountpoint=mountpoint))
+        return True
 
     # Create subvol dir if PV is manually created
     if not os.path.exists(pvpath):
@@ -1004,6 +1009,11 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         if not is_client:
             cmd.extend(["--client-pid", "-14"])
 
+        if not is_server_pod_reachable(hosts, 24007, 20):
+            errmsg = f"No reachable hosts found for volume {volname}!"
+            logging.error(logf(errmsg, hosts=hosts))
+            raise Exception(errmsg)
+
         # Use volfile server of bricks/storage_unit processes,
         # instead of volfile paths. Since now brick processes
         # supports serving of client volfiles.
@@ -1019,7 +1029,14 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         try:
             (_, err, _) = execute(*cmd)
         except CommandException as err:
-            logging.error(logf(
+            if err.ret == 32 & is_gluster_mount_proc_running(volname, mountpoint):
+                logging.debug(logf(
+                    "Already mounted (code 32)",
+                    mount=mountpoint
+                ))
+                return mountpoint
+            else:
+                logging.error(logf(
                 "error to execute command",
                 volume=volume,
                 cmd=cmd,
@@ -1028,6 +1045,19 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             raise err
 
     return mountpoint
+
+def verify_mount(mountpoint):
+    """
+    Explicitly verify mount health using system 'stat' command.
+    Returns True if mount is active and healthy, False otherwise.
+    """
+    try:
+        subprocess.check_output(['stat', mountpoint], stderr=subprocess.STDOUT)
+        logging.debug(logf("Mount verification successful", mountpoint=mountpoint))
+        return True
+    except subprocess.CalledProcessError as exc:
+        logging.error(logf("Mount verification failed", mountpoint=mountpoint, error=exc.output.decode()))
+        return False
 
 
 def handle_external_volume(volume, mountpoint, is_client, hosts):
@@ -1057,7 +1087,7 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
 
     use_gluster_quota = False
     if (os.path.isfile("/etc/secret-volume/ssh-privatekey")
-        and "SECRET_GLUSTERQUOTA_SSH_USERNAME" in os.environ):
+            and "SECRET_GLUSTERQUOTA_SSH_USERNAME" in os.environ):
         use_gluster_quota = True
     secret_private_key = "/etc/secret-volume/ssh-privatekey"
     secret_username = os.environ.get('SECRET_GLUSTERQUOTA_SSH_USERNAME', None)
@@ -1111,7 +1141,7 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
         "--fuse-mountopts=auto_unmount",
         "-l", "%s" % log_file,
         "--volfile-id", volname,
-    ]
+              ]
     ## on server component we can mount glusterfs with client-pid
     # if not is_client:
     #    cmd.extend(["--client-pid", "-14"])
@@ -1155,7 +1185,7 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
             logging.info(logf(
                 "proceeding without supplied incorrect mount options",
                 options=g_ops,
-                ))
+            ))
             command = cmd + [mountpoint]
             try:
                 execute(*command)

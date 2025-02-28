@@ -15,6 +15,7 @@ spec:
         app.kubernetes.io/component: csi-driver
       namespace: {{ .Release.Namespace }}
     spec:
+      priorityClassName: system-node-critical
       serviceAccountName: kadalu-csi-nodeplugin
       containers:
         - name: csi-node-driver-registrar
