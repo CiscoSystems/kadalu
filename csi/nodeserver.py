@@ -92,11 +92,15 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
 
      while retry_count < max_retries and not mounted_successfully:
         try:
-            mount_glusterfs(volume, mntdir, True)
             if verify_mount(mntdir):
+                mounted_successfully = True
+                logging.info(logf("Mount verified and successful", mountpoint=mntdir))
+            else:
+                mount_glusterfs(volume, mntdir, True)
+                if verify_mount(mntdir):
                     mounted_successfully = True
                     logging.info(logf("Mount verified and successful", mountpoint=mntdir))
-            else:
+                else:
                   raise Exception("Mount verification failed.")
         except Exception as e:
             retry_count += 1
