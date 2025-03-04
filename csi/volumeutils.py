@@ -863,11 +863,6 @@ def volume_list(voltype=None):
 
 def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
     """Mount a Volume"""
-    # Check if the volume is already mounted
-    if os.path.ismount(mountpoint):
-        logging.info(logf("Volume is already mounted", mountpoint=mountpoint))
-        return True
-
     # Create subvol dir if PV is manually created
     if not os.path.exists(pvpath):
         makedirs(pvpath)
