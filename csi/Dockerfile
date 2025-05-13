@@ -1,12 +1,14 @@
 ARG builder_version="1.1.0"
-FROM  dockerhub.cisco.com/robot-dockerprod/kadalu-builder:${builder_version} as builder
+FROM dockerhub.cisco.com/robot-dockerprod/kadalu-builder:${builder_version} as builder
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
 
 COPY requirements/csi-requirements.txt /tmp/
 
-RUN python3 -m pip install $(grep -vE '^(grpcio|\s*#)' /tmp/csi-requirements.txt) --no-cache-dir && \
-    python3 -m pip download --only-binary :all: --dest /tmp/ --no-cache $(grep -oE '^grpcio==.*$' /tmp/csi-requirements.txt) && \
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install $(grep -vE '^(grpcio|\s*#)' /tmp/csi-requirements.txt) --no-cache-dir && \
+    python3 -m pip download --only-binary :all: --dest /tmp/ --no-cache $(grep -oE '^grpcio==.*$' /tmp/csi-requirements.txt) || \
+    python3 -m pip install grpcio==1.63.2 --no-cache-dir && \
     python3 -m pip install /tmp/*.whl --force-reinstall && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/csi-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
@@ -76,4 +78,3 @@ ENTRYPOINT ["python3", "/kadalu/start.py"]
 # Debugging, Comment the above line and
 # uncomment below line
 # ENTRYPOINT ["tail", "-f", "/dev/null"]
-

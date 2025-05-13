@@ -5,7 +5,8 @@ ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
 
 COPY requirements/operator-requirements.txt /tmp/
 
-RUN python3 -m pip install -r /tmp/operator-requirements.txt --no-cache-dir && \
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install -r /tmp/operator-requirements.txt --no-cache-dir && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/operator-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
