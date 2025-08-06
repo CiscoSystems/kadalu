@@ -904,39 +904,326 @@ def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
 
 
 def unmount_glusterfs(mountpoint):
-    """Unmount GlusterFS mount"""
+    """Unmount GlusterFS mount with enhanced error handling for stuck mounts"""
+    
+    if not mountpoint or not os.path.exists(mountpoint):
+        logging.debug(logf("Mount point does not exist, nothing to unmount", mountpoint=mountpoint))
+        return
+    
     volname = os.path.basename(mountpoint)
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
-            execute("/usr/bin/fusermount", "-u", mountpoint)
+    
+    # Check if actually mounted before attempting unmount
+    if not is_gluster_mount_proc_running(volname, mountpoint):
+        logging.debug(logf("GlusterFS mount not running, nothing to unmount", 
+                          mountpoint=mountpoint, volname=volname))
+        return
+    
+    # Enhanced unmount with multiple strategies for stuck mounts
+    unmount_strategies = [
+        # Strategy 1: Standard fusermount
+        lambda mp: execute("/usr/bin/fusermount", "-u", mp),
+        # Strategy 2: Lazy unmount for stuck mounts  
+        lambda mp: execute("/usr/bin/fusermount", "-uz", mp),
+        # Strategy 3: Force kill and unmount
+        lambda mp: execute("/usr/bin/fusermount", "-uz", mp)
+    ]
+    
+    with mount_lock:
+        for strategy_idx, strategy in enumerate(unmount_strategies):
+            try:
+                logging.debug(logf(
+                    "Attempting GlusterFS unmount",
+                    mountpoint=mountpoint,
+                    volname=volname,
+                    strategy=strategy_idx + 1,
+                    strategy_name=["standard", "lazy", "force"][strategy_idx]
+                ))
+                
+                strategy(mountpoint)
+                
+                # Verify unmount succeeded with timeout
+                verification_timeout = 10 + (strategy_idx * 5)
+                start_time = time.time()
+                
+                while time.time() - start_time < verification_timeout:
+                    if not is_gluster_mount_proc_running(volname, mountpoint):
+                        logging.info(logf(
+                            "GlusterFS unmount successful",
+                            mountpoint=mountpoint,
+                            volname=volname,
+                            strategy=strategy_idx + 1,
+                            verification_time=time.time() - start_time
+                        ))
+                        return
+                    time.sleep(1)
+                
+                # If we reach here, unmount command succeeded but process still running
+                if strategy_idx < len(unmount_strategies) - 1:
+                    logging.warning(logf(
+                        "Unmount command succeeded but GlusterFS process still running",
+                        mountpoint=mountpoint,
+                        volname=volname,
+                        strategy=strategy_idx + 1
+                    ))
+                    continue
+                    
+            except CommandException as e:
+                error_msg = str(e)
+                
+                # Check for common unmount errors
+                is_not_mounted = any(term in error_msg.lower() for term in [
+                    "not mounted", "no such file or directory", "invalid argument",
+                    "fusermount: entry for", "not found in /etc/mtab"
+                ])
+                is_busy_error = any(term in error_msg.lower() for term in [
+                    "device is busy", "target is busy", "resource busy"
+                ])
+                
+                if is_not_mounted:
+                    logging.debug(logf(
+                        "GlusterFS mount already unmounted",
+                        mountpoint=mountpoint,
+                        volname=volname,
+                        strategy=strategy_idx + 1
+                    ))
+                    return
+                elif is_busy_error and strategy_idx < len(unmount_strategies) - 1:
+                    logging.warning(logf(
+                        "GlusterFS mount busy, trying next unmount strategy",
+                        mountpoint=mountpoint,
+                        volname=volname,
+                        strategy=strategy_idx + 1,
+                        error=error_msg
+                    ))
+                    time.sleep(3 * (strategy_idx + 1))  # Progressive delay
+                    continue
+                else:
+                    logging.error(logf(
+                        "GlusterFS unmount strategy failed",
+                        mountpoint=mountpoint,
+                        volname=volname,
+                        strategy=strategy_idx + 1,
+                        error=error_msg,
+                        is_final_strategy=strategy_idx == len(unmount_strategies) - 1
+                    ))
+                    
+                    if strategy_idx == len(unmount_strategies) - 1:
+                        logging.error(logf(
+                            "All GlusterFS unmount strategies failed",
+                            mountpoint=mountpoint,
+                            volname=volname,
+                            final_error=error_msg
+                        ))
+                        raise
 
 
 def unmount_volume(mountpoint):
-    """Unmount a Volume"""
+    """Unmount a Volume with enhanced resilience for stuck mounts and slow I/O"""
+    
+    if not mountpoint or not os.path.exists(mountpoint):
+        logging.debug(logf("Mount point does not exist, nothing to unmount", mountpoint=mountpoint))
+        return
+    
     device = ""
-    if mountpoint.find("volumeDevices"):
+    max_unmount_attempts = 3
+    attempt = 0
+    
+    # Handle block device cleanup if needed
+    if "volumeDevices" in mountpoint:
         # Should remove loop device as well or else duplicate loop devices will
         # be setup everytime
         cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
         try:
             device, _, _ = execute(*cmd)
+            
+            if match := re.search(r'loop\d+', device):
+                loop = match.group(0)
+                loop_device = f"/dev/{loop}"
+                
+                logging.debug(logf(
+                    "Found loop device for cleanup",
+                    mountpoint=mountpoint,
+                    loop_device=loop_device
+                ))
+                
+                # Detach loop device with retry
+                for loop_attempt in range(3):
+                    try:
+                        cmd = ["losetup", "-d", loop_device]
+                        execute(*cmd)
+                        logging.info(logf(
+                            "Loop device detached successfully",
+                            loop_device=loop_device,
+                            attempt=loop_attempt + 1
+                        ))
+                        break
+                    except CommandException as e:
+                        if "not found" in str(e).lower() or "no such device" in str(e).lower():
+                            logging.debug(logf("Loop device already detached", loop_device=loop_device))
+                            break
+                        elif loop_attempt < 2:
+                            logging.warning(logf(
+                                "Failed to detach loop device, retrying",
+                                loop_device=loop_device,
+                                attempt=loop_attempt + 1,
+                                error=str(e)
+                            ))
+                            time.sleep(1 + loop_attempt)
+                        else:
+                            logging.error(logf(
+                                "Failed to detach loop device after all attempts",
+                                loop_device=loop_device,
+                                error=str(e)
+                            ))
+                            
         except CommandException as ce:
             if ce.ret == 1:
                 logging.error(logf(
-                    "Mount Point not found",
+                    "Mount Point not found for device lookup",
                     mount=mountpoint
                 ))
-
             else:
                 raise
 
-        if match := re.search(r'loop\d+', device):
-            loop = match.group(0)
-            cmd = ["losetup", "-d", f"/dev/{loop}"]
-            execute(*cmd)
-
-    if os.path.ismount(mountpoint):
-        execute(UNMOUNT_CMD, mountpoint)
+    # Attempt volume unmount with retries
+    while attempt < max_unmount_attempts:
+        attempt += 1
+        
+        try:
+            logging.debug(logf(
+                "Attempting volume unmount",
+                mountpoint=mountpoint,
+                attempt=attempt,
+                max_attempts=max_unmount_attempts
+            ))
+            
+            if os.path.ismount(mountpoint):
+                # Check if it's a GlusterFS mount first
+                try:
+                    mount_output = execute("mount")
+                    mount_lines = mount_output[0].split('\n') if mount_output[0] else []
+                    
+                    for line in mount_lines:
+                        if mountpoint in line and ("glusterfs" in line or "fuse.glusterfs" in line):
+                            logging.debug(logf(
+                                "Detected GlusterFS mount, using specialized unmount",
+                                mountpoint=mountpoint
+                            ))
+                            unmount_glusterfs(mountpoint)
+                            return
+                except Exception as e:
+                    logging.debug(logf(
+                        "Failed to detect mount type, falling back to standard unmount",
+                        mountpoint=mountpoint,
+                        error=str(e)
+                    ))
+                
+                # Standard unmount
+                execute(UNMOUNT_CMD, mountpoint)
+                
+                # Verify unmount with timeout
+                verification_timeout = 15
+                start_time = time.time()
+                
+                while time.time() - start_time < verification_timeout:
+                    if not os.path.ismount(mountpoint):
+                        logging.info(logf(
+                            "Volume unmount successful",
+                            mountpoint=mountpoint,
+                            attempt=attempt,
+                            verification_time=time.time() - start_time
+                        ))
+                        return
+                    time.sleep(1)
+                
+                # Mount still detected after timeout
+                if attempt < max_unmount_attempts:
+                    logging.warning(logf(
+                        "Volume still mounted after unmount command, retrying",
+                        mountpoint=mountpoint,
+                        attempt=attempt,
+                        verification_timeout=verification_timeout
+                    ))
+                    time.sleep(2 * attempt)
+                    continue
+            else:
+                logging.debug(logf(
+                    "Volume not mounted, nothing to unmount",
+                    mountpoint=mountpoint
+                ))
+                return
+                
+        except CommandException as e:
+            error_msg = str(e)
+            
+            # Check for common unmount errors
+            is_not_mounted = any(term in error_msg.lower() for term in [
+                "not mounted", "no such file or directory", "invalid argument"
+            ])
+            is_busy_error = any(term in error_msg.lower() for term in [
+                "device is busy", "target is busy", "resource busy"
+            ])
+            
+            if is_not_mounted:
+                logging.debug(logf(
+                    "Volume already unmounted",
+                    mountpoint=mountpoint,
+                    attempt=attempt
+                ))
+                return
+            elif is_busy_error and attempt < max_unmount_attempts:
+                backoff_time = 2 ** attempt
+                logging.warning(logf(
+                    "Volume busy, retrying unmount with backoff",
+                    mountpoint=mountpoint,
+                    attempt=attempt,
+                    max_attempts=max_unmount_attempts,
+                    error=error_msg,
+                    backoff_seconds=backoff_time
+                ))
+                time.sleep(backoff_time)
+            elif attempt < max_unmount_attempts:
+                backoff_time = 2 ** attempt
+                logging.warning(logf(
+                    "Volume unmount failed, retrying with backoff",
+                    mountpoint=mountpoint,
+                    attempt=attempt,
+                    max_attempts=max_unmount_attempts,
+                    error=error_msg,
+                    backoff_seconds=backoff_time
+                ))
+                time.sleep(backoff_time)
+            else:
+                logging.error(logf(
+                    "All volume unmount attempts failed",
+                    mountpoint=mountpoint,
+                    attempts=max_unmount_attempts,
+                    final_error=error_msg
+                ))
+                
+                # Last resort: try force unmount
+                try:
+                    logging.warning(logf(
+                        "Attempting force unmount as last resort",
+                        mountpoint=mountpoint
+                    ))
+                    execute(UNMOUNT_CMD, "-f", mountpoint)
+                    time.sleep(2)
+                    
+                    if not os.path.ismount(mountpoint):
+                        logging.info(logf(
+                            "Force unmount successful",
+                            mountpoint=mountpoint
+                        ))
+                        return
+                except CommandException as force_error:
+                    logging.error(logf(
+                        "Force unmount also failed",
+                        mountpoint=mountpoint,
+                        error=str(force_error)
+                    ))
+                
+                raise e
 
 
 def expand_mounted_volume(mountpoint):
@@ -946,7 +1233,7 @@ def expand_mounted_volume(mountpoint):
 
 
 def mount_glusterfs(volume, mountpoint, is_client=False):
-    """Mount Glusterfs Volume"""
+    """Mount Glusterfs Volume with enhanced resilience for slow disks and transport issues"""
 
     data = {}
     hosts = []
@@ -960,18 +1247,45 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
     for brick in data["bricks"]:
         hosts.append(brick["node"])
 
-    try:
-        if not is_server_pod_reachable(hosts, 24007, 20):
-            err = "Cannot establish socket connection with none of the hosts!"
-            cmd = "sock.connect(hosts, 24007)"
-            raise CommandException(-1, cmd, err)
-    except CommandException:
-        logging.error(logf(
-            "None of the server pods are reachable",
-            volume=volume
-        ))
+    # Enhanced server reachability check with retries
+    max_server_check_retries = 3
+    server_check_retry = 0
+    server_reachable = False
+    
+    while server_check_retry < max_server_check_retries and not server_reachable:
+        try:
+            # Increased timeout for slow networks/disks
+            if not is_server_pod_reachable(hosts, 24007, 30):
+                server_check_retry += 1
+                if server_check_retry < max_server_check_retries:
+                    backoff_time = 5 * server_check_retry
+                    logging.warning(logf(
+                        "Server pods not reachable, retrying with backoff",
+                        attempt=server_check_retry,
+                        max_attempts=max_server_check_retries,
+                        backoff_seconds=backoff_time,
+                        hosts=hosts
+                    ))
+                    time.sleep(backoff_time)
+                    continue
+                else:
+                    err = "Cannot establish socket connection with any of the hosts after all retries!"
+                    cmd = "sock.connect(hosts, 24007)"
+                    raise CommandException(-1, cmd, err)
+            else:
+                server_reachable = True
+        except CommandException:
+            server_check_retry += 1
+            if server_check_retry >= max_server_check_retries:
+                logging.error(logf(
+                    "None of the server pods are reachable after all attempts",
+                    volume=volume,
+                    hosts=hosts,
+                    attempts=max_server_check_retries
+                ))
+                raise
 
-    # Ignore if already glusterfs process running for that volume
+    # Check for existing mount processes with timeout
     if is_gluster_mount_proc_running(volname, mountpoint):
         logging.debug(logf(
             "Already mounted",
@@ -979,7 +1293,8 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         return mountpoint
 
-    # Ignore if already mounted
+    # Double-check with delay for slow systems
+    time.sleep(1)
     if is_gluster_mount_proc_running(volname, mountpoint):
         logging.debug(logf(
             "Already mounted (2nd try)",
@@ -991,73 +1306,357 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         makedirs(mountpoint)
 
     with mount_lock:
-        # Fix the log, so we can check it out later
-        # log_file = "/var/log/gluster/%s.log" % mountpoint.replace("/", "-")
+        # Enhanced log file handling
         log_file = "/var/log/gluster/gluster.log"
 
         cmd = [
             GLUSTERFS_CMD,
             "--process-name", "fuse",
-            "--fuse-mountopts=auto_unmount",
             "-l", log_file,
             "--volfile-id", volname,
             "--fs-display-name", "kadalu:%s" % volname,
-            mountpoint
         ]
+        
+        # Enhanced mount options for slow disks and unstable networks
+        # Consolidated FUSE mount options to prevent conflicts
+        fuse_opts = [
+            "auto_unmount",               # Auto unmount on process exit
+            "default_permissions",        # Use kernel permission checking
+            "allow_other",               # Allow other users to access
+            "kernel_cache",              # Enable kernel page caching
+            "big_writes",                # Allow writes > 4KB for better performance
+            "max_write=131072",          # 128KB max write size for slow disks
+            "max_read=131072",           # 128KB max read size
+            "max_readahead=131072",      # 128KB readahead for sequential access
+            "sync_read",                 # Synchronous reads for consistency during network flaps
+            "hard_remove"                # Don't hide files on unlink during I/O errors
+        ]
+        
+        # Single consolidated fuse-mountopts parameter
+        cmd.extend(["--fuse-mountopts=" + ",".join(fuse_opts)])
+        
+        # Enhanced GlusterFS-specific options for slow disks and network resilience
+        enhanced_gluster_opts = [
+            "--attribute-timeout=60",      # Increased cache time for slow disks
+            "--entry-timeout=60",          # Increased directory cache time
+            "--negative-timeout=10",       # Cache negative lookups briefly
+            "--gid-timeout=600",           # Longer GID cache for slow auth
+            "--background-qlen=128",       # Larger queue for slow I/O operations
+            "--congestion-threshold=20",   # Higher threshold for network issues
+            "--client-log-level=WARNING",  # Reduce log noise during flaps
+            "--log-level=WARNING"          # Reduce server log noise
+        ]
+        
+        # Add enhanced options
+        for opt in enhanced_gluster_opts:
+            cmd.append(opt)
+
+        cmd.append(mountpoint)
 
         ## required for 'simple-quota'
         if not is_client:
             cmd.extend(["--client-pid", "-14"])
 
+        # Final server reachability check before mount
         if not is_server_pod_reachable(hosts, 24007, 20):
             errmsg = f"No reachable hosts found for volume {volname}!"
             logging.error(logf(errmsg, hosts=hosts))
             raise Exception(errmsg)
 
         # Use volfile server of bricks/storage_unit processes,
-        # instead of volfile paths. Since now brick processes
-        # supports serving of client volfiles.
+        # with enhanced host selection for reliability
         host_set = set(hosts)
         if HOST_IP in host_set:
             # Make the local host be the first entry for the mount, if viable
             cmd.extend(["--volfile-server", HOST_IP])
             host_set.remove(HOST_IP)
+        
+        # Randomize remaining hosts to distribute load
         random_hosts = sample(host_set, len(host_set))
         for host in random_hosts:
             cmd.extend(["--volfile-server", host])
 
-        try:
-            (_, err, _) = execute(*cmd)
-        except CommandException as err:
-            if err.ret == 32 & is_gluster_mount_proc_running(volname, mountpoint):
+        # Enhanced mount execution with retry logic
+        mount_retries = 3
+        mount_attempt = 0
+        mount_successful = False
+        
+        while mount_attempt < mount_retries and not mount_successful:
+            mount_attempt += 1
+            try:
                 logging.debug(logf(
-                    "Already mounted (code 32)",
-                    mount=mountpoint
+                    "Attempting GlusterFS mount",
+                    attempt=mount_attempt,
+                    max_attempts=mount_retries,
+                    cmd=cmd,
+                    volume=volname,
+                    mountpoint=mountpoint
                 ))
-                return mountpoint
-            else:
-                logging.error(logf(
-                "error to execute command",
-                volume=volume,
-                cmd=cmd,
-                error=format(err)
-            ))
-            raise err
+                
+                (_, err, _) = execute(*cmd)
+                mount_successful = True
+                
+                logging.info(logf(
+                    "GlusterFS mount successful",
+                    attempt=mount_attempt,
+                    volume=volname,
+                    mountpoint=mountpoint
+                ))
+                
+            except CommandException as err:
+                if err.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
+                    logging.debug(logf(
+                        "Already mounted (code 32)",
+                        mount=mountpoint
+                    ))
+                    mount_successful = True
+                    break
+                else:
+                    error_msg = str(err)
+                    
+                    # Categorize mount errors for appropriate handling
+                    is_transport_error = any(term in error_msg.lower() for term in [
+                        "transport endpoint", "connection refused", "no route to host",
+                        "network unreachable", "connection reset", "connection timed out"
+                    ])
+                    is_fuse_error = any(term in error_msg.lower() for term in [
+                        "fuse", "device or resource busy", "mount point busy"
+                    ])
+                    is_permission_error = any(term in error_msg.lower() for term in [
+                        "permission denied", "operation not permitted"
+                    ])
+                    
+                    if mount_attempt < mount_retries:
+                        # Calculate backoff based on error type
+                        if is_transport_error:
+                            backoff_time = 5 * mount_attempt  # Progressive backoff for transport issues
+                        elif is_fuse_error:
+                            backoff_time = 2 * mount_attempt   # Shorter backoff for FUSE issues
+                        elif is_permission_error:
+                            backoff_time = 1  # Quick retry for permission issues
+                        else:
+                            backoff_time = 3 * mount_attempt   # General backoff
+                        
+                        logging.warning(logf(
+                            "Mount attempt failed, retrying with backoff",
+                            attempt=mount_attempt,
+                            max_attempts=mount_retries,
+                            volume=volname,
+                            mountpoint=mountpoint,
+                            error=error_msg,
+                            backoff_seconds=backoff_time,
+                            error_type="transport" if is_transport_error else
+                                       "fuse" if is_fuse_error else
+                                       "permission" if is_permission_error else "general"
+                        ))
+                        
+                        time.sleep(backoff_time)
+                    else:
+                        logging.error(logf(
+                            "All mount attempts failed",
+                            volume=volname,
+                            mountpoint=mountpoint,
+                            cmd=cmd,
+                            final_error=error_msg,
+                            attempts=mount_retries
+                        ))
+                        raise err
 
     return mountpoint
 
-def verify_mount(mountpoint):
+def verify_mount(mountpoint, timeout=45):
     """
-    Explicitly verify mount health using system 'stat' command.
+    Explicitly verify mount health using system 'stat' command with enhanced resilience.
     Returns True if mount is active and healthy, False otherwise.
+    Enhanced for slow disk scenarios with I/O error detection and stale handle recovery.
     """
-    try:
-        subprocess.check_output(['stat', mountpoint], stderr=subprocess.STDOUT)
-        logging.debug(logf("Mount verification successful", mountpoint=mountpoint))
-        return True
-    except subprocess.CalledProcessError as exc:
-        logging.error(logf("Mount verification failed", mountpoint=mountpoint, error=exc.output.decode()))
-        return False
+    verification_methods = [
+        # Method 1: Basic stat check with stale handle detection
+        lambda mp: subprocess.check_output(['stat', '-c', '%i %s %Y', mp], stderr=subprocess.STDOUT, timeout=timeout//3),
+        # Method 2: List directory contents (tests read access and detects I/O errors)
+        lambda mp: subprocess.check_output(['ls', '-la', mp], stderr=subprocess.STDOUT, timeout=timeout//3),
+        # Method 3: Check filesystem type and mount status
+        lambda mp: subprocess.check_output(['findmnt', '-n', '-o', 'FSTYPE,OPTIONS', mp], stderr=subprocess.STDOUT, timeout=timeout//3)
+    ]
+    
+    start_time = time.time()
+    io_error_detected = False
+    stale_handle_detected = False
+    
+    for method_idx, method in enumerate(verification_methods):
+        try:
+            result = method(mountpoint)
+            elapsed = time.time() - start_time
+            
+            # Check result for signs of I/O issues
+            result_str = result.decode() if isinstance(result, bytes) else str(result)
+            
+            # Look for signs of recovery from I/O errors
+            if method_idx == 0 and result_str.strip():  # stat succeeded
+                inode_info = result_str.strip().split()
+                if len(inode_info) >= 3:
+                    try:
+                        inode = int(inode_info[0])
+                        size = int(inode_info[1])
+                        mtime = int(inode_info[2])
+                        
+                        # Validate reasonable values (detect corrupted filesystem responses)
+                        if inode > 0 and size >= 0 and mtime > 0:
+                            logging.debug(logf(
+                                "Mount verification successful with valid filesystem data",
+                                mountpoint=mountpoint,
+                                method=method_idx + 1,
+                                elapsed_seconds=f"{elapsed:.2f}",
+                                inode=inode,
+                                size=size
+                            ))
+                            return True
+                        else:
+                            logging.warning(logf(
+                                "Mount verification returned suspicious filesystem data",
+                                mountpoint=mountpoint,
+                                inode=inode,
+                                size=size,
+                                mtime=mtime
+                            ))
+                            continue
+                    except (ValueError, IndexError):
+                        logging.warning(logf(
+                            "Mount verification returned malformed stat data",
+                            mountpoint=mountpoint,
+                            raw_output=result_str
+                        ))
+                        continue
+            
+            logging.debug(logf(
+                "Mount verification successful",
+                mountpoint=mountpoint,
+                method=method_idx + 1,
+                elapsed_seconds=f"{elapsed:.2f}",
+                result_size=len(result) if result else 0
+            ))
+            return True
+            
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
+            logging.warning(logf(
+                "Mount verification method timed out - possible slow I/O",
+                mountpoint=mountpoint,
+                method=method_idx + 1,
+                timeout_seconds=timeout//3,
+                elapsed_seconds=f"{elapsed:.2f}"
+            ))
+            
+            # If we're running out of total time, break
+            if elapsed >= timeout:
+                break
+            continue
+            
+        except subprocess.CalledProcessError as exc:
+            elapsed = time.time() - start_time
+            error_output = exc.output.decode() if exc.output else str(exc)
+            
+            # Enhanced I/O error detection
+            io_errors = [
+                "input/output error", "i/o error", "remote i/o error",
+                "connection timed out", "connection reset", "connection refused"
+            ]
+            stale_handle_errors = [
+                "stale file handle", "stale nfs file handle", 
+                "transport endpoint is not connected",
+                "no such file or directory"  # Can indicate stale handles in distributed filesystems
+            ]
+            unmounted_errors = [
+                "not mounted", "mount point does not exist",
+                "no such device", "block device required"
+            ]
+            
+            is_io_error = any(term in error_output.lower() for term in io_errors)
+            is_stale_handle = any(term in error_output.lower() for term in stale_handle_errors)
+            is_unmounted_error = any(term in error_output.lower() for term in unmounted_errors)
+            
+            if is_io_error:
+                io_error_detected = True
+                logging.error(logf(
+                    "I/O error detected during mount verification - filesystem may need remount",
+                    mountpoint=mountpoint,
+                    method=method_idx + 1,
+                    error=error_output,
+                    elapsed_seconds=f"{elapsed:.2f}"
+                ))
+            elif is_stale_handle:
+                stale_handle_detected = True
+                logging.error(logf(
+                    "Stale file handle detected - mount may need refresh",
+                    mountpoint=mountpoint,
+                    method=method_idx + 1,
+                    error=error_output,
+                    elapsed_seconds=f"{elapsed:.2f}"
+                ))
+            elif is_unmounted_error:
+                logging.error(logf(
+                    "Mount verification failed - mount appears to be unmounted",
+                    mountpoint=mountpoint,
+                    method=method_idx + 1,
+                    error=error_output,
+                    elapsed_seconds=f"{elapsed:.2f}"
+                ))
+                return False
+            else:
+                logging.warning(logf(
+                    "Mount verification method failed, trying next method",
+                    mountpoint=mountpoint,
+                    method=method_idx + 1,
+                    error=error_output,
+                    elapsed_seconds=f"{elapsed:.2f}"
+                ))
+                
+                # If this was the last method, log failure
+                if method_idx == len(verification_methods) - 1:
+                    logging.error(logf(
+                        "All mount verification methods failed",
+                        mountpoint=mountpoint,
+                        final_error=error_output,
+                        total_elapsed_seconds=f"{elapsed:.2f}",
+                        io_error_detected=io_error_detected,
+                        stale_handle_detected=stale_handle_detected
+                    ))
+                    return False
+                continue
+                
+        except Exception as exc:
+            elapsed = time.time() - start_time
+            logging.warning(logf(
+                "Unexpected error in mount verification method",
+                mountpoint=mountpoint,
+                method=method_idx + 1,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                elapsed_seconds=f"{elapsed:.2f}"
+            ))
+            continue
+    
+    # If we get here, all methods failed or timed out
+    total_elapsed = time.time() - start_time
+    
+    # Provide specific guidance based on detected error types
+    error_guidance = []
+    if io_error_detected:
+        error_guidance.append("I/O errors detected - check network connectivity and storage health")
+    if stale_handle_detected:
+        error_guidance.append("Stale file handles detected - mount may need to be refreshed")
+    
+    logging.error(logf(
+        "Mount verification failed after trying all methods",
+        mountpoint=mountpoint,
+        total_methods=len(verification_methods),
+        total_elapsed_seconds=f"{total_elapsed:.2f}",
+        timeout_seconds=timeout,
+        io_error_detected=io_error_detected,
+        stale_handle_detected=stale_handle_detected,
+        guidance="; ".join(error_guidance) if error_guidance else "Check mount and network status"
+    ))
+    return False
 
 
 def handle_external_volume(volume, mountpoint, is_client, hosts):

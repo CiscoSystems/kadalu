@@ -87,31 +87,99 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
     """
     Return True if atleast one of server pods(internal hosts),
     are reachable at port 24007.
-    Retries every 30 seconds if the server pod is not reachable.
-    Returns False server pods are not reachable even after the timeout.
+    Enhanced with exponential backoff and better error handling for slow/unstable networks.
     """
 
     socket.setdefaulttimeout(timeout)
+    max_host_retries = 4
+    base_retry_delay = 5
+    max_retry_delay = 60
 
-    for host in hosts:
+    for host_idx, host in enumerate(hosts):
         retry_count = 0
-        while retry_count < 4:
+        host_reachable = False
+        
+        while retry_count < max_host_retries and not host_reachable:
             try:
-                if netaddr.valid_ipv(host):
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                else:
+                # Create socket with appropriate family
+                if netaddr.valid_ipv6(host):
                     sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                sock.connect((host, port))
-                sock.close()
-                return True
-            except socket.error:
-                logging.info(logf(
-                    "Waiting for the server pod to come up...",
-                    server_pod=host,
-                    retry_count=retry_count+1
-                ))
-                time.sleep(30)
+                else:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                
+                # Set socket options for better reliability
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                
+                # Try to connect with timeout
+                try:
+                    sock.settimeout(timeout)
+                    sock.connect((host, port))
+                    sock.close()
+                    logging.debug(logf(
+                        "Server pod reachable",
+                        host=host,
+                        port=port,
+                        attempt=retry_count + 1
+                    ))
+                    return True
+                except socket.timeout:
+                    raise socket.error("Connection timeout")
+                    
+            except socket.error as e:
                 retry_count += 1
+                error_msg = str(e)
+                
+                # Categorize errors for appropriate handling
+                is_timeout = "timeout" in error_msg.lower() or "timed out" in error_msg.lower()
+                is_connection_refused = "connection refused" in error_msg.lower()
+                is_network_unreachable = "network unreachable" in error_msg.lower() or "no route to host" in error_msg.lower()
+                
+                if retry_count < max_host_retries:
+                    # Calculate backoff based on error type and retry count
+                    if is_timeout:
+                        backoff_delay = min(base_retry_delay * (2 ** retry_count), max_retry_delay)
+                    elif is_connection_refused:
+                        backoff_delay = min(base_retry_delay * retry_count, max_retry_delay // 2)
+                    elif is_network_unreachable:
+                        backoff_delay = min(base_retry_delay * (3 ** retry_count), max_retry_delay)
+                    else:
+                        backoff_delay = min(base_retry_delay * (2 ** retry_count), max_retry_delay)
+                    
+                    logging.info(logf(
+                        "Server pod connection attempt failed, retrying with backoff",
+                        host=host,
+                        port=port,
+                        attempt=retry_count,
+                        max_attempts=max_host_retries,
+                        error_type="timeout" if is_timeout else
+                                   "refused" if is_connection_refused else
+                                   "unreachable" if is_network_unreachable else "other",
+                        error_message=error_msg,
+                        backoff_seconds=backoff_delay,
+                        hosts_remaining=len(hosts) - host_idx - 1
+                    ))
+                    time.sleep(backoff_delay)
+                else:
+                    logging.warning(logf(
+                        "All connection attempts to server pod failed",
+                        host=host,
+                        port=port,
+                        attempts=max_host_retries,
+                        final_error=error_msg
+                    ))
+            finally:
+                try:
+                    sock.close()
+                except:
+                    pass
+                    
+    logging.error(logf(
+        "No server pods are reachable after all attempts",
+        hosts=hosts,
+        port=port,
+        total_attempts=len(hosts) * max_host_retries
+    ))
     return False
 
 

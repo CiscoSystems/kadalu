@@ -8,7 +8,7 @@ import time
 import csi_pb2
 import csi_pb2_grpc
 import grpc
-from kadalulib import logf
+from kadalulib import logf, is_gluster_mount_proc_running
 from volumeutils import mount_glusterfs, mount_volume, unmount_volume, verify_mount
 
 HOSTVOL_MOUNTDIR = "/mnt/cw_glusterfs/kadalu"
@@ -85,29 +85,138 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
         'type': voltype,
     }
 
-     max_retries = 5
-     retry_interval = 5  # seconds
+     # Enhanced retry logic with exponential backoff for slow disk scenarios
+     max_retries = 8  # Increased for slow storage
+     base_retry_interval = 3  # seconds
+     max_retry_interval = 60  # seconds
      retry_count = 0
      mounted_successfully = False
 
      while retry_count < max_retries and not mounted_successfully:
         try:
+            # Calculate exponential backoff for mount operations
+            retry_delay = min(base_retry_interval * (2 ** retry_count), max_retry_interval)
+            
+            if retry_count > 0:
+                logging.info(logf(
+                    "Retrying mount operation with exponential backoff",
+                    attempt=retry_count + 1,
+                    max_attempts=max_retries,
+                    delay_seconds=retry_delay,
+                    mountpoint=mntdir
+                ))
+                time.sleep(retry_delay)
+            
             mount_glusterfs(volume, mntdir, True)
-            if verify_mount(mntdir):
-                    mounted_successfully = True
-                    logging.info(logf("Mount verified and successful", mountpoint=mntdir))
+            
+            # Enhanced mount verification with I/O error recovery
+            mount_verification_timeout = 45 + (retry_count * 15)  # Increase timeout for slow disks
+            verification_start = time.time()
+            
+            # First verification attempt
+            mount_verified = verify_mount(mntdir, timeout=mount_verification_timeout)
+            
+            if mount_verified:
+                mounted_successfully = True
+                logging.info(logf("Mount verified and successful", 
+                                mountpoint=mntdir, 
+                                verification_time=time.time() - verification_start))
+                break
             else:
-                  raise Exception("Mount verification failed.")
+                # Check if verification failed due to I/O errors vs. actual mount failure
+                # Wait a bit for filesystem to stabilize after mount
+                stabilization_wait = min(10 + (retry_count * 5), 30)
+                logging.info(logf(
+                    "Initial mount verification failed, waiting for filesystem stabilization",
+                    mountpoint=mntdir,
+                    wait_seconds=stabilization_wait,
+                    attempt=retry_count + 1
+                ))
+                time.sleep(stabilization_wait)
+                
+                # Retry verification with extended timeout for slow I/O recovery
+                extended_timeout = mount_verification_timeout + 30
+                mount_verified = verify_mount(mntdir, timeout=extended_timeout)
+                
+                if mount_verified:
+                    mounted_successfully = True
+                    total_verification_time = time.time() - verification_start
+                    logging.info(logf(
+                        "Mount verified successful after stabilization wait", 
+                        mountpoint=mntdir, 
+                        total_verification_time=total_verification_time,
+                        stabilization_wait=stabilization_wait
+                    ))
+                    break
+                else:
+                    # Final check: verify the GlusterFS process is actually running
+                    # This helps distinguish between I/O errors and mount failures
+                    try:
+                        if is_gluster_mount_proc_running(volume["name"], mntdir):
+                            logging.warning(logf(
+                                "GlusterFS process running but verification failed - possible I/O issues",
+                                mountpoint=mntdir,
+                                volume_name=volume["name"],
+                                attempt=retry_count + 1
+                            ))
+                            # Consider this a temporary I/O issue, not a mount failure
+                            # Continue to retry logic with appropriate error categorization
+                            raise Exception(f"Mount process running but I/O verification failed after {total_verification_time:.2f}s - possible network/storage issues.")
+                        else:
+                            raise Exception(f"Mount verification failed after {total_verification_time:.2f}s - mount process not running.")
+                    except Exception as proc_check_error:
+                        raise Exception(f"Mount verification failed after {total_verification_time:.2f}s - {str(proc_check_error)}")
+                
         except Exception as e:
             retry_count += 1
-            logging.warning(logf(
-                "Retrying mount due to failure",
-                attempt=retry_count,
-                max_attempts=max_retries,
-                mountpoint=mntdir,
-                error=str(e)
-            ))
-            time.sleep(retry_interval)
+            error_msg = str(e)
+            
+            # Enhanced error categorization for better handling
+            is_timeout_error = "timeout" in error_msg.lower() or "time out" in error_msg.lower()
+            is_transport_error = any(term in error_msg.lower() for term in [
+                "transport endpoint", "connection refused", "no route to host", 
+                "network unreachable", "connection reset"
+            ])
+            is_io_error = any(term in error_msg.lower() for term in [
+                "input/output error", "i/o error", "device or resource busy",
+                "read-only file system", "no space left"
+            ])
+            
+            error_category = "general"
+            if is_timeout_error:
+                error_category = "timeout"
+            elif is_transport_error:
+                error_category = "transport"
+            elif is_io_error:
+                error_category = "io"
+            
+            if retry_count < max_retries:
+                # Adjust retry delay based on error type
+                if error_category == "transport":
+                    retry_delay = min(base_retry_interval * (2 ** retry_count), max_retry_interval)
+                elif error_category == "timeout" or error_category == "io":
+                    retry_delay = min(base_retry_interval * (3 ** retry_count), max_retry_interval * 2)
+                else:
+                    retry_delay = min(base_retry_interval * (2 ** retry_count), max_retry_interval)
+                    
+                logging.warning(logf(
+                    "Mount attempt failed, will retry with enhanced backoff",
+                    attempt=retry_count,
+                    max_attempts=max_retries,
+                    mountpoint=mntdir,
+                    error=error_msg,
+                    error_category=error_category,
+                    next_retry_delay=retry_delay
+                ))
+            else:
+                logging.error(logf(
+                    "All mount retry attempts exhausted",
+                    final_attempt=retry_count,
+                    max_attempts=max_retries,
+                    mountpoint=mntdir,
+                    error=error_msg,
+                    error_category=error_category
+                ))
 
      if not mounted_successfully:
         errmsg = f"All {max_retries} retry attempts to mount volume failed."

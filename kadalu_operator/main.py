@@ -878,19 +878,79 @@ def watch_stream(core_v1_client, k8s_client):
 
 def crd_watch(core_v1_client, k8s_client):
     """
-    Watches the CRD to provision new PV Hosting Volumes
+    Watches the CRD to provision new PV Hosting Volumes with enhanced resilience
     """
+    consecutive_failures = 0
+    max_consecutive_failures = 10
+    base_backoff = 5  # seconds
+    max_backoff = 300  # 5 minutes
+    
     while True:
         try:
             watch_stream(core_v1_client, k8s_client)
-        except (ProtocolError, NewConnectionError):
-            # It might so happen that this'll be logged for every hit in k8s
-            # event stream in kadalu namespace and better to log at debug level
-            logging.debug(
-                logf(
-                    "Watch connection broken and restarting watch on the stream"
+            # Reset failure counter on successful watch
+            consecutive_failures = 0
+            
+        except (ProtocolError, NewConnectionError) as e:
+            consecutive_failures += 1
+            
+            # Calculate exponential backoff with jitter
+            backoff_time = min(base_backoff * (2 ** min(consecutive_failures - 1, 6)), max_backoff)
+            jitter = backoff_time * 0.1 * (0.5 - (time.time() % 100 / 100.0))
+            sleep_time = backoff_time + jitter
+            
+            error_type = type(e).__name__
+            logging.warning(logf(
+                "Watch connection broken, applying exponential backoff",
+                error_type=error_type,
+                consecutive_failures=consecutive_failures,
+                max_failures=max_consecutive_failures,
+                backoff_seconds=sleep_time,
+                error_message=str(e)
+            ))
+            
+            # If too many consecutive failures, implement circuit breaker pattern
+            if consecutive_failures >= max_consecutive_failures:
+                logging.error(logf(
+                    "Too many consecutive watch failures, implementing extended backoff",
+                    consecutive_failures=consecutive_failures,
+                    extended_backoff_seconds=max_backoff
                 ))
-            time.sleep(30)
+                time.sleep(max_backoff)
+                consecutive_failures = max_consecutive_failures // 2  # Partial reset
+            else:
+                time.sleep(sleep_time)
+                
+        except Exception as e:
+            # Handle unexpected errors with different strategy
+            consecutive_failures += 1
+            error_type = type(e).__name__
+            
+            logging.error(logf(
+                "Unexpected error in CRD watch, implementing recovery strategy",
+                error_type=error_type,
+                error_message=str(e),
+                consecutive_failures=consecutive_failures
+            ))
+            
+            # Progressive backoff for unexpected errors
+            backoff_time = min(30 * consecutive_failures, max_backoff)
+            time.sleep(backoff_time)
+            
+            # Reset client connections after unexpected errors
+            if consecutive_failures % 5 == 0:
+                logging.info(logf(
+                    "Attempting to refresh Kubernetes client connections",
+                    consecutive_failures=consecutive_failures
+                ))
+                try:
+                    # Force reload of kubernetes config
+                    config.load_incluster_config()
+                except Exception as config_error:
+                    logging.warning(logf(
+                        "Failed to reload Kubernetes config",
+                        error=str(config_error)
+                    ))
 
 
 def deploy_csi_pods(core_v1_client):
