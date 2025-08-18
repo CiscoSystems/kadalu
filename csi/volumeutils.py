@@ -1249,16 +1249,17 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
 
     # Enhanced server reachability check with retries
     max_server_check_retries = 3
+    server_check_timeout = 30
+        
     server_check_retry = 0
     server_reachable = False
     
     while server_check_retry < max_server_check_retries and not server_reachable:
         try:
-            # Increased timeout for slow networks/disks
-            if not is_server_pod_reachable(hosts, 24007, 30):
+            if not is_server_pod_reachable(hosts, 24007, server_check_timeout):
                 server_check_retry += 1
                 if server_check_retry < max_server_check_retries:
-                    backoff_time = 5 * server_check_retry
+                    backoff_time = 3 * server_check_retry  # Reduced from 5
                     logging.warning(logf(
                         "Server pods not reachable, retrying with backoff",
                         attempt=server_check_retry,
@@ -1378,6 +1379,8 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
 
         # Enhanced mount execution with retry logic
         mount_retries = 3
+        base_backoff = 2
+            
         mount_attempt = 0
         mount_successful = False
         

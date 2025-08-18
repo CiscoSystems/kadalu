@@ -882,8 +882,10 @@ def crd_watch(core_v1_client, k8s_client):
     """
     consecutive_failures = 0
     max_consecutive_failures = 10
-    base_backoff = 5  # seconds
-    max_backoff = 300  # 5 minutes
+    
+    # Production configuration
+    base_backoff = 5
+    max_backoff = 300
     
     while True:
         try:

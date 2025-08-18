@@ -90,10 +90,13 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
     Enhanced with exponential backoff and better error handling for slow/unstable networks.
     """
 
-    socket.setdefaulttimeout(timeout)
+    # Production configuration
     max_host_retries = 4
     base_retry_delay = 5
     max_retry_delay = 60
+    timeout = 20
+
+    socket.setdefaulttimeout(timeout)
 
     for host_idx, host in enumerate(hosts):
         retry_count = 0
@@ -136,15 +139,15 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
                 is_network_unreachable = "network unreachable" in error_msg.lower() or "no route to host" in error_msg.lower()
                 
                 if retry_count < max_host_retries:
-                    # Calculate backoff based on error type and retry count
+                    # Calculate backoff based on error type and retry count - optimized for installation
                     if is_timeout:
-                        backoff_delay = min(base_retry_delay * (2 ** retry_count), max_retry_delay)
+                        backoff_delay = min(base_retry_delay * retry_count, max_retry_delay // 2)  # Faster for timeouts
                     elif is_connection_refused:
-                        backoff_delay = min(base_retry_delay * retry_count, max_retry_delay // 2)
+                        backoff_delay = min(base_retry_delay * retry_count, max_retry_delay // 3)  # Even faster for refused
                     elif is_network_unreachable:
-                        backoff_delay = min(base_retry_delay * (3 ** retry_count), max_retry_delay)
+                        backoff_delay = min(base_retry_delay * (2 ** retry_count), max_retry_delay)  # Standard backoff
                     else:
-                        backoff_delay = min(base_retry_delay * (2 ** retry_count), max_retry_delay)
+                        backoff_delay = min(base_retry_delay * retry_count, max_retry_delay // 2)    # Faster for unknown
                     
                     logging.info(logf(
                         "Server pod connection attempt failed, retrying with backoff",

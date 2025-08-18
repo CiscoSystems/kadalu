@@ -44,9 +44,10 @@ lock_manager = volume_lock_manager()
 
 def connect_socket(client_socket):
     # Enhanced resilience: exponential backoff with jitter for slow/unstable connections
-    base_retry_interval = 2
-    max_retry_interval = 30
+    base_retry_interval = 2.0
+    max_retry_interval = 60
     max_retries = 15
+    socket_timeout = 30
     jitter_factor = 0.1
 
     retry_count = 0
@@ -54,7 +55,7 @@ def connect_socket(client_socket):
     while retry_count < max_retries and not connected:
         try:
             # Set socket timeout to handle slow responses
-            client_socket.settimeout(30)
+            client_socket.settimeout(socket_timeout)
             # Attempt to connect to the server
             client_socket.connect(SOCKET_FILE_PATH)
             connected = True
