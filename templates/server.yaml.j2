@@ -34,6 +34,7 @@ spec:
           effect: {{ toleration.get("effect") }}
   {%- endfor %}
 {%- endif %}
+      priorityClassName: system-cluster-critical
       serviceAccountName: kadalu-server-sa
 {%- if kube_hostname != "" %}
       affinity:
