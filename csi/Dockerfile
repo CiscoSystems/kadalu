@@ -13,7 +13,7 @@ RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/csi-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM dockerhub.cisco.com/robot-dockerprod/python:3.10-slim-bookworm as prod
+FROM dockerhub.cisco.com/robot-dockerprod/python/python:3.10-slim-bookworm as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
 
