@@ -903,10 +903,13 @@ def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
     return True
 
 
-def unmount_glusterfs(mountpoint):
+def unmount_glusterfs(mountpoint, volname):
     """Unmount GlusterFS mount"""
-    volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
+        logging.debug(
+            logf("Executing unmount",
+                 volname=volname,
+                 mountpoint=mountpoint))
         with mount_lock:
             execute("/usr/bin/fusermount", "-u", mountpoint)
 
