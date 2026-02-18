@@ -152,7 +152,10 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             return csi_pb2.CreateVolumeResponse()
 
-        # Check for same name and different capacity
+        # Check for same name — CSI spec requires CreateVolume to be idempotent.
+        # If a volume already exists with the same name, return it (same size)
+        # or error (different size). Without this early return, retried requests
+        # can create duplicate PVs on different hosting volumes (volume leak).
         volume = search_volume(request.name)
         if volume:
             if volume.size != request.capacity_range.required_bytes:
@@ -161,6 +164,35 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                 context.set_details(errmsg)
                 context.set_code(grpc.StatusCode.ALREADY_EXISTS)
                 return csi_pb2.CreateVolumeResponse()
+
+            # Volume exists with matching capacity — return idempotent response
+            logging.info(logf(
+                "Volume already exists with matching capacity, returning existing",
+                volname=volume.volname,
+                hostvol=volume.hostvol,
+                size=volume.size,
+            ))
+            volume_context = {
+                "hostvol": volume.hostvol,
+                "pvtype": volume.voltype,
+                "fstype": "xfs",
+                "single_pv_per_pool": str(volume.single_pv_per_pool),
+            }
+            if volume.volpath:
+                volume_context["path"] = volume.volpath
+            if volume.extra.get('hostvoltype'):
+                volume_context["type"] = volume.extra['hostvoltype']
+            if volume.extra.get('gvolname'):
+                volume_context["gvolname"] = volume.extra['gvolname']
+            if volume.extra.get('ghost'):
+                volume_context["gserver"] = volume.extra['ghost']
+            return csi_pb2.CreateVolumeResponse(
+                volume={
+                    "volume_id": request.name,
+                    "capacity_bytes": volume.size,
+                    "volume_context": volume_context,
+                }
+            )
 
         pvsize = request.capacity_range.required_bytes
 
@@ -329,6 +361,10 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                             context.set_details(errmsg)
                             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                             return csi_pb2.CreateVolumeResponse()
+                # Update stat.db so free-size accounting is correct for
+                # External kadalu-type volumes (prevents overprovisioning)
+                update_free_size(ext_volume['name'], request.name, -pvsize)
+
                 logging.info(logf(
                     "Volume created",
                     name=request.name,
@@ -691,7 +727,7 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             errmsg = "Host volume resource is exhausted"
             context.set_details(errmsg)
             context.set_code(grpc.StatusCode.RESOURCE_EXHAUSTED)
-            return csi_pb2.CreateVolumeResponse()
+            return csi_pb2.ControllerExpandVolumeResponse()
 
         hostvoltype = existing_volume.extra['hostvoltype']
 

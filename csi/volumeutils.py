@@ -700,6 +700,23 @@ def delete_volume(volname):
                              path_prefix, info_file_name)
             )
 
+            # Reclaim space in stat.db so the hosting volume's free size
+            # is correctly tracked. Without this, archived PVs permanently
+            # consume accounting space, eventually starving new allocations.
+            try:
+                info_file_path = os.path.join(
+                    HOSTVOL_MOUNTDIR, vol.hostvol, "info",
+                    path_prefix, info_file_name)
+                with open(info_file_path) as info_file:
+                    data = json.load(info_file)
+                update_free_size(vol.hostvol, old_volname, data["size"])
+            except (OSError, KeyError, json.JSONDecodeError) as size_err:
+                logging.warning(logf(
+                    "Failed to update free size after archiving volume",
+                    volname=old_volname,
+                    error=size_err,
+                ))
+
             logging.info(logf(
                 "Volume archived",
                 old_volname=old_volname,
@@ -970,7 +987,16 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
     volname = volume["name"]
 
     if volume['type'] == 'External':
-        return handle_external_volume(volume, mountpoint, is_client, volume['g_host'])
+        try:
+            return handle_external_volume(volume, mountpoint, is_client, volume['g_host'])
+        except Exception as mount_err:
+            logging.warning(logf(
+                "External volume mount failed, returning mountpoint for caller to handle",
+                volume=volname,
+                mountpoint=mountpoint,
+                error=mount_err,
+            ))
+            return mountpoint
 
     with open(os.path.join(VOLINFO_DIR, "%s.info" % volname)) as info_file:
         data = json.load(info_file)
@@ -996,18 +1022,19 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         return mountpoint
 
-    # Ignore if already mounted
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted (2nd try)",
-            mount=mountpoint
-        ))
-        return mountpoint
-
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
 
     with mount_lock:
+        # Re-check inside lock to prevent TOCTOU race where two threads
+        # both pass the above check and then both mount, creating duplicate
+        # FUSE processes (mount leak).
+        if is_gluster_mount_proc_running(volname, mountpoint):
+            logging.debug(logf(
+                "Already mounted (inside lock)",
+                mount=mountpoint
+            ))
+            return mountpoint
         # Fix the log, so we can check it out later
         # log_file = "/var/log/gluster/%s.log" % mountpoint.replace("/", "-")
         log_file = "/var/log/gluster/gluster.log"
@@ -1046,7 +1073,10 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         try:
             (_, err, _) = execute(*cmd)
         except CommandException as err:
-            if err.ret == 32 & is_gluster_mount_proc_running(volname, mountpoint):
+            # Fix: use `and` not `&` — Python precedence makes `32 & bool`
+            # evaluate to 0, so this check was always False, causing the
+            # error to propagate and the caller to retry-mount (FUSE leak).
+            if err.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
                 logging.debug(logf(
                     "Already mounted (code 32)",
                     mount=mountpoint
@@ -1054,12 +1084,12 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
                 return mountpoint
             else:
                 logging.error(logf(
-                "error to execute command",
-                volume=volume,
-                cmd=cmd,
-                error=format(err)
-            ))
-            raise err
+                    "error to execute command",
+                    volume=volume,
+                    cmd=cmd,
+                    error=format(err)
+                ))
+                raise err
 
     return mountpoint
 
@@ -1090,6 +1120,13 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
         with mount_lock:
+            # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
+            if is_gluster_mount_proc_running(volname, mountpoint):
+                logging.debug(logf(
+                    "Already mounted (inside lock)",
+                    mount=mountpoint
+                ))
+                return mountpoint
             mount_glusterfs_with_host(volname,
                                       mountpoint,
                                       hosts,

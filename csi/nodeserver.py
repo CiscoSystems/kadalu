@@ -140,6 +140,17 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
                     mounted_successfully = True
                     logging.info(logf("Mount verified and successful", mountpoint=mntdir))
             else:
+                  # Unmount the failed mount before retrying to prevent
+                  # orphaned FUSE processes from accumulating (mount leak).
+                  try:
+                      from volumeutils import unmount_glusterfs
+                      unmount_glusterfs(mntdir)
+                  except Exception as unmount_err:
+                      logging.warning(logf(
+                          "Failed to unmount before retry",
+                          mountpoint=mntdir,
+                          error=str(unmount_err)
+                      ))
                   raise OSError("Mount verification failed.")
         except (OSError, IOError, ConnectionError) as e:
             retry_count += 1
