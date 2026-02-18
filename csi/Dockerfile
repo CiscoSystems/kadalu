@@ -13,16 +13,30 @@ RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/csi-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM dockerhub.cisco.com/robot-dockerprod/python:3.10-slim-bullseye as prod
+FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20250805-607185b.11 as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -yq && \
-    apt-get install -y --no-install-recommends sqlite3 psmisc logrotate xfsprogs attr libtirpc3 bash inotify-tools ssh liburcu6 libgoogle-perftools4 && \
+    apt-get install -y --no-install-recommends sqlite3 psmisc logrotate xfsprogs attr libtirpc3t64 bash inotify-tools openssh-client liburcu8t64 libgoogle-perftools4t64 && \
     apt-get -y clean && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
+
+# Copy Python 3.10 runtime from builder (cw-ubuntu-base has no Python)
+COPY --from=builder /usr/local/bin/python3.10 /usr/local/bin/python3.10
+COPY --from=builder /usr/local/lib/python3.10 /usr/local/lib/python3.10
+COPY --from=builder /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so.1.0
+
+# Copy OpenSSL 1.1 libs from builder (Noble ships OpenSSL 3.x, Python 3.10 needs 1.1)
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /usr/lib/x86_64-linux-gnu/libssl.so.1.1
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1
+
+# Register shared libraries and create python3 symlink
+RUN ln -sfn /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so && \
+    ln -sfn /usr/local/bin/python3.10 /usr/local/bin/python3 && \
+    ldconfig
 
 # copy glusterfs installed in /opt
 COPY --from=builder /opt /opt
@@ -31,8 +45,7 @@ COPY --from=builder /opt /opt
 # using already installed packages from builder for faster build time
 COPY --from=builder /kadalu /kadalu
 
-# venv in 'buster' img links python3 executable to '/usr/bin/python3'
-# but in 'python:slim' it's at '/usr/local/bin/python3'
+# Point venv python3 to the copied python3 binary
 RUN ln -sfn /usr/local/bin/python3 /kadalu/bin/python3 && \
   mkdir -p /kadalu/volfiles /kadalu/templates && \
   mkdir -p /var/log/glusterfs /var/run/gluster
