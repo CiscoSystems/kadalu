@@ -914,26 +914,27 @@ def unmount_glusterfs(mountpoint):
 def unmount_volume(mountpoint):
     """Unmount a Volume"""
     device = ""
-    if mountpoint.find("volumeDevices"):
+    if mountpoint.find("volumeDevices") != -1:
         # Should remove loop device as well or else duplicate loop devices will
         # be setup everytime
-        cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
-        try:
-            device, _, _ = execute(*cmd)
-        except CommandException as ce:
-            if ce.ret == 1:
-                logging.error(logf(
-                    "Mount Point not found",
-                    mount=mountpoint
-                ))
+        if os.path.exists(mountpoint):
+            cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
+            try:
+                device, _, _ = execute(*cmd)
+            except CommandException as ce:
+                if ce.ret == 1:
+                    logging.error(logf(
+                        "Mount Point not found",
+                        mount=mountpoint
+                    ))
 
-            else:
-                raise
+                else:
+                    raise
 
-        if match := re.search(r'loop\d+', device):
-            loop = match.group(0)
-            cmd = ["losetup", "-d", f"/dev/{loop}"]
-            execute(*cmd)
+            if match := re.search(r'loop\d+', device):
+                loop = match.group(0)
+                cmd = ["losetup", "-d", f"/dev/{loop}"]
+                execute(*cmd)
 
     if os.path.ismount(mountpoint):
         execute(UNMOUNT_CMD, mountpoint)
@@ -1092,16 +1093,16 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     secret_private_key = "/etc/secret-volume/ssh-privatekey"
     secret_username = os.environ.get('SECRET_GLUSTERQUOTA_SSH_USERNAME', None)
 
-    # SSH into only first reachable host in volume['g_host'] entry
-    g_host = reachable_host(hosts)
-
-    if g_host is None:
-        logging.error(logf("All hosts are not reachable"))
-        return
-
     if use_gluster_quota is False:
         logging.debug(logf("Do not set quota-deem-statfs"))
     else:
+        # SSH into only first reachable host in volume['g_host'] entry
+        g_host = reachable_host(hosts)
+
+        if g_host is None:
+            logging.error(logf("All hosts are not reachable"))
+            return
+
         logging.debug(logf("Set quota-deem-statfs for gluster directory Quota"))
         quota_deem_cmd = [
             "ssh",
@@ -1181,27 +1182,28 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     try:
         execute(*command)
     except CommandException as excep:
-        if  excep.err.find("invalid option") != -1:
-            logging.info(logf(
+        if  excep.err.find("invalid option") != -1 or excep.err.find("unrecognized option") != -1:
+            logging.warning(logf(
                 "proceeding without supplied incorrect mount options",
                 options=g_ops,
             ))
             command = cmd + [mountpoint]
             try:
                 execute(*command)
-            except CommandException as excep:
-                logging.info(logf(
+            except CommandException as retry_err:
+                logging.error(logf(
                     "mount command failed",
                     cmd=command,
-                    error=excep,
+                    error=retry_err,
                 ))
+                raise retry_err
             return
-        logging.info(logf(
+        logging.error(logf(
             "mount command failed",
             cmd=command,
             error=excep,
         ))
-    return
+        raise excep
 
 
 def check_external_volume(pv_request, host_volumes):
