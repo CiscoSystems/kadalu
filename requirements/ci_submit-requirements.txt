@@ -4,41 +4,39 @@
 #
 #    pip-compile --extra=ci_submit --output-file=ci_submit-requirements.txt
 #
-astroid==2.15.0
+astroid==3.3.6
     # via pylint
-bcrypt==4.0.1
+bcrypt==4.2.1
     # via paramiko
-cffi==1.15.1
+cffi==1.17.1
     # via
     #   cryptography
     #   pynacl
-cryptography==39.0.2
+cryptography==44.0.0
     # via paramiko
-dill==0.3.6
+dill==0.3.9
     # via pylint
 glustercli==0.8.3
     # via Kadalu (setup.py)
-isort==5.12.0
+isort==5.13.2
     # via pylint
-lazy-object-proxy==1.9.0
-    # via astroid
 mccabe==0.7.0
     # via pylint
-paramiko==3.1.0
+paramiko==3.5.0
     # via glustercli
-platformdirs==3.1.1
+platformdirs==4.3.6
     # via pylint
-pycparser==2.21
+pycparser==2.22
     # via cffi
-pylint==2.17.0
+pylint==3.3.2
     # via Kadalu (setup.py)
 pynacl==1.5.0
     # via paramiko
-tomli==2.0.1
+tomli==2.2.1
     # via pylint
-tomlkit==0.11.6
+tomlkit==0.13.2
     # via pylint
-typing-extensions==4.5.0
+typing-extensions==4.12.2
     # via astroid
-wrapt==1.15.0
+wrapt==1.17.0
     # via astroid
