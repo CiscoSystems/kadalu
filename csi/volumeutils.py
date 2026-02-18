@@ -281,9 +281,9 @@ def create_block_volume(pvtype, hostvol_mnt, volname, size):
 
     # at times orchestrator will send same request if earlier request times
     # out and truncate file if doesn't exist since if we reach here the request
-    # is a valid one
-    if not os.path.exists(volpath_full):
-        volpath_fd = os.open(volpath_full, os.O_CREAT | os.O_RDWR)
+    # is a valid one. Use O_EXCL to atomically create-if-not-exists (CWE-367 TOCTOU fix)
+    try:
+        volpath_fd = os.open(volpath_full, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
         os.close(volpath_fd)
         os.truncate(volpath_full, size)
         logging.debug(logf(
@@ -302,6 +302,11 @@ def create_block_volume(pvtype, hostvol_mnt, volname, size):
             ))
 
         save_pv_metadata(hostvol_mnt, volpath, size)
+    except FileExistsError:
+        logging.info(logf(
+            "Block volume file already exists, skipping creation",
+            path=volpath
+        ))
 
     return Volume(
         volname=volname,
@@ -394,8 +399,8 @@ def create_subdir_volume(hostvol_mnt, volname, size, use_gluster_quota):
                       str(size).encode()],
                      [ENOTCONN])
     # noqa # pylint: disable=broad-except
-    except Exception as err:
-        logging.info(logf(
+    except (OSError, IOError) as err:
+        logging.warning(logf(
             "Failed to set quota using simple-quota. Continuing",
             error=err
         ))
@@ -648,6 +653,17 @@ def delete_volume(volname):
     pv_reclaim_policy = storage_data.get("pvReclaimPolicy", "delete")
 
     volpath = os.path.join(HOSTVOL_MOUNTDIR, vol.hostvol, vol.volpath)
+
+    # Validate path stays within HOSTVOL_MOUNTDIR (CWE-22 path traversal prevention)
+    real_volpath = os.path.realpath(volpath)
+    real_mountdir = os.path.realpath(HOSTVOL_MOUNTDIR)
+    if not real_volpath.startswith(real_mountdir + os.sep):
+        logging.error(logf(
+            "Path traversal detected in delete_volume, refusing to delete",
+            volpath=volpath,
+            resolved=real_volpath
+        ))
+        return
 
     # Stop the delete operation if the reclaim policy is set to "retain"
     if pv_reclaim_policy == "retain":
@@ -1106,7 +1122,9 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
         logging.debug(logf("Set quota-deem-statfs for gluster directory Quota"))
         quota_deem_cmd = [
             "ssh",
-            "-oStrictHostKeyChecking=no",
+            "-oStrictHostKeyChecking=accept-new",
+            "-oUserKnownHostsFile=/var/lib/gluster/known_hosts",
+            "-oBatchMode=yes",
             "-i",
             "%s" % secret_private_key,
             "%s@%s" % (secret_username, g_host),

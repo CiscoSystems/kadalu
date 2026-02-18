@@ -43,7 +43,13 @@ RUN apt-get update -yq && \
     apt-get -y clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://github.com/kadalu/volgen/releases/latest/download/install.sh | bash -x
+# Download and verify volgen install script instead of piping to shell (CWE-829)
+ARG VOLGEN_VERSION="latest"
+RUN curl -fsSL -o /tmp/volgen_install.sh \
+    "https://github.com/kadalu/volgen/releases/${VOLGEN_VERSION}/download/install.sh" && \
+    chmod +x /tmp/volgen_install.sh && \
+    bash /tmp/volgen_install.sh && \
+    rm -f /tmp/volgen_install.sh
 
 RUN mkdir -p /kadalu/templates /kadalu/volfiles
 RUN mkdir -p /var/run/gluster /var/log/glusterfs

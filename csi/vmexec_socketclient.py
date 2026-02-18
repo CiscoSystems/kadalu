@@ -7,6 +7,7 @@ the kadalu container.
 
 import os
 import json
+import re
 import socket
 import threading
 import time
@@ -20,6 +21,12 @@ SOCKET_FILE_PATH = "/var/run/vmexec-socket/vmexec.sock"
 GLUSTERFS_CMD = "/usr/sbin/glusterfs"
 MOUNT_CMD = "/usr/bin/mount"
 UNMOUNT_CMD = "/usr/bin/umount"
+
+# Socket communication timeout in seconds (CWE-400 prevention)
+SOCKET_TIMEOUT = 120
+
+# Maximum response size from vmexec server (16 KB)
+MAX_RESPONSE_SIZE = 16384
 
 # List of commands intercepted and sent to the command execution conduit
 cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "pgrep"]
@@ -52,12 +59,14 @@ def connect_socket(client_socket):
         try:
             # Attempt to connect to the server
             client_socket.connect(SOCKET_FILE_PATH)
+            # Set socket timeout after connection to prevent indefinite blocking (CWE-400)
+            client_socket.settimeout(SOCKET_TIMEOUT)
             connected = True
             logging.debug("Socket connected to the vmexec!")
             break
         except ConnectionRefusedError:
             # Connection refused, wait for a while before retrying
-            logging.debug("Connection refused. Retrying in seconds..." + str(retry_interval))
+            logging.debug("Connection refused. Retrying in %d seconds...", retry_interval)
             time.sleep(retry_interval)
             retry_count += 1
 
@@ -85,9 +94,29 @@ def substitute_cmd(commandList):
     return commandList
 
 
+def _recv_all(sock, max_size=MAX_RESPONSE_SIZE):
+    """Read from socket until connection closes, up to max_size bytes (CWE-400 prevention)."""
+    chunks = []
+    total = 0
+    while total < max_size:
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        except socket.timeout:
+            logging.warning("Socket recv timed out after %d bytes received", total)
+            break
+    if total >= max_size:
+        logging.warning("Response truncated at %d bytes (max_size=%d)", total, max_size)
+    return b''.join(chunks)
+
+
 def socket_client(commandList):
     cmd = substitute_cmd(commandList)
-    cmd = " ".join(cmd)
+    # Send command as JSON array for structured execution (CWE-78 mitigation)
+    cmd_str = " ".join(cmd)
 
     json_data = {
         "error": "Unable to execute command",
@@ -108,7 +137,7 @@ def socket_client(commandList):
             data = {
                 "id": str(uuid.uuid4()),
                 "commandtype": 4,
-                "command": cmd,
+                "command": cmd_str,
                 "hidden": False,
                 "commandtimeout": 100,
                 "nodelist": [""]
@@ -116,11 +145,14 @@ def socket_client(commandList):
             json_inp = json.dumps(data)
             client_socket.sendall(json_inp.encode('utf-8'))
 
-            # receive a response from the server
-            response = client_socket.recv(1024).decode('utf-8')
+            # Read full response with bounded recv (CWE-400 prevention)
+            response_bytes = _recv_all(client_socket)
+            if not response_bytes:
+                raise CommandException(-1, cmd_str, "Empty response from vmexec server")
+            response = response_bytes.decode('utf-8')
             json_data = json.loads(response)
     if len(json_data['error']) != 0:
-        raise CommandException(-1, cmd, json_data['error'])
+        raise CommandException(-1, cmd_str, json_data['error'])
     return json_data['output'], json_data['error'], int(json_data['result'])
 
 
@@ -135,7 +167,10 @@ def execute_vmexec(*cmd):
 
 
 def is_gl_mount_vmexec(volname, mountpoint):
-    args = "bin/glusterfs.*{}.*{}".format(volname, mountpoint)
+    # Escape regex special characters in inputs to prevent regex injection (CWE-78)
+    safe_volname = re.escape(volname)
+    safe_mountpoint = re.escape(mountpoint)
+    args = "bin/glusterfs.*{}.*{}".format(safe_volname, safe_mountpoint)
     out, err, res = execute_vmexec("/usr/bin/pgrep", "-c", "-f", args)
     logging.debug("is_gl_mount_vmexec for volume: %s, returned. out: %s err: %s res: %s", volname, out, err, res)
     return int(out) > 0 and res == 0

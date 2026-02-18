@@ -48,7 +48,8 @@ COPY --from=builder /kadalu /kadalu
 # Point venv python3 to the copied python3 binary
 RUN ln -sfn /usr/local/bin/python3 /kadalu/bin/python3 && \
   mkdir -p /kadalu/volfiles /kadalu/templates && \
-  mkdir -p /var/log/glusterfs /var/run/gluster
+  mkdir -p /var/log/glusterfs /var/run/gluster && \
+  mkdir -p /var/lib/gluster
 
 COPY lib/kadalulib.py          /kadalu/
 COPY csi/controllerserver.py   /kadalu/

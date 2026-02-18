@@ -1055,9 +1055,8 @@ def main():
 if __name__ == "__main__":
     logging_setup()
 
-    # This not advised in general, but in kadalu's operator, it is OK to
-    # ignore these warnings as we know to make calls only inside of
-    # kubernetes cluster
-    urllib3.disable_warnings()
+    # Only suppress the specific InsecureRequestWarning when running
+    # inside Kubernetes cluster with in-cluster config (CWE-295 mitigation)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     main()
