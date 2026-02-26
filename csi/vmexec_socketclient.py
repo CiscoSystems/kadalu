@@ -23,7 +23,11 @@ MOUNT_CMD = "/usr/bin/mount"
 UNMOUNT_CMD = "/usr/bin/umount"
 
 # Socket communication timeout in seconds (CWE-400 prevention)
-SOCKET_TIMEOUT = 120
+# Must exceed the longest expected vmexec operation (glusterfs mount can take 300s+)
+SOCKET_TIMEOUT = int(os.environ.get("VMEXEC_SOCKET_TIMEOUT", "900"))
+
+# Timeout sent to vmexec server for command execution (seconds)
+VMEXEC_CMD_TIMEOUT = int(os.environ.get("VMEXEC_CMD_TIMEOUT", "800"))
 
 # Maximum response size from vmexec server (16 KB)
 MAX_RESPONSE_SIZE = 16384
@@ -139,7 +143,7 @@ def socket_client(commandList):
                 "commandtype": 4,
                 "command": cmd_str,
                 "hidden": False,
-                "commandtimeout": 100,
+                "commandtimeout": VMEXEC_CMD_TIMEOUT,
                 "nodelist": [""]
             }
             json_inp = json.dumps(data)
