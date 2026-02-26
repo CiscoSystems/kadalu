@@ -154,7 +154,13 @@ def socket_client(commandList):
             if not response_bytes:
                 raise CommandException(-1, cmd_str, "Empty response from vmexec server")
             response = response_bytes.decode('utf-8')
-            json_data = json.loads(response)
+            try:
+                json_data = json.loads(response)
+            except json.JSONDecodeError:
+                logging.error("Malformed JSON response from vmexec server (truncated or timed out): %s",
+                              response[:200])
+                raise CommandException(-1, cmd_str,
+                                       "Malformed response from vmexec server (possible truncation or timeout)")
     if len(json_data['error']) != 0:
         raise CommandException(-1, cmd_str, json_data['error'])
     return json_data['output'], json_data['error'], int(json_data['result'])

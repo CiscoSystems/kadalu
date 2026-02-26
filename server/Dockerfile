@@ -19,10 +19,6 @@ COPY --from=builder /usr/local/bin/python3.10 /usr/local/bin/python3.10
 COPY --from=builder /usr/local/lib/python3.10 /usr/local/lib/python3.10
 COPY --from=builder /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so.1.0
 
-# Copy OpenSSL 1.1 libs from builder (Noble ships OpenSSL 3.x, Python 3.10 needs 1.1)
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /usr/lib/x86_64-linux-gnu/libssl.so.1.1
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1
-
 # Register shared libraries and create python3 symlink
 RUN ln -sfn /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so && \
     ln -sfn /usr/local/bin/python3.10 /usr/local/bin/python3 && \
