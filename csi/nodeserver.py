@@ -167,7 +167,13 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
             errmsg = "Mount failed with non-retriable error: %s" % str(e)
             logging.error(logf(errmsg, mountpoint=mntdir))
             context.set_details(errmsg)
-            context.set_code(grpc.StatusCode.INTERNAL)
+            if isinstance(e, ValueError):
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            elif isinstance(e, PermissionError):
+                context.set_code(grpc.StatusCode.PERMISSION_DENIED)
+            else:
+                # Fallback to INTERNAL for any unexpected error type
+                context.set_code(grpc.StatusCode.INTERNAL)
             return csi_pb2.NodePublishVolumeResponse()
 
      if not mounted_successfully:
