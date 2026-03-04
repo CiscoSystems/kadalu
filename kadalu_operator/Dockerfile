@@ -1,4 +1,4 @@
-ARG builder_version="1.1.0"
+ARG builder_version="1.2.0"
 FROM  dockerhub.cisco.com/robot-dockerprod/kadalu-builder:${builder_version} as builder
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
@@ -10,7 +10,7 @@ RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/operator-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM dockerhub.cisco.com/robot-dockerprod/python:3.10-slim-bullseye as prod
+FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20250805-607185b.11 as prod
 
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -22,6 +22,16 @@ RUN apt-get update -yq && \
 
 ENV PATH="/kadalu/bin:$PATH"
 
+# Copy Python 3.10 runtime from builder (cw-ubuntu-base has no Python)
+COPY --from=builder /usr/local/bin/python3.10 /usr/local/bin/python3.10
+COPY --from=builder /usr/local/lib/python3.10 /usr/local/lib/python3.10
+COPY --from=builder /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so.1.0
+
+# Register shared libraries and create python3 symlink
+RUN ln -sfn /usr/local/lib/libpython3.10.so.1.0 /usr/local/lib/libpython3.10.so && \
+    ln -sfn /usr/local/bin/python3.10 /usr/local/bin/python3 && \
+    ldconfig
+
 # kubectl binary
 COPY --from=builder /usr/bin/kubectl /usr/bin/kubectl
 
@@ -29,8 +39,7 @@ COPY --from=builder /usr/bin/kubectl /usr/bin/kubectl
 # using already installed packages from builder for faster build time
 COPY --from=builder /kadalu /kadalu
 
-# venv in 'buster' img links python3 executable to '/usr/bin/python3'
-# but in 'python:slim' it's at '/usr/local/bin/python3'
+# Point venv python3 to the copied python3 binary
 RUN ln -sfn /usr/local/bin/python3 /kadalu/bin/python3 && \
   mkdir -p /kadalu/manifests
 

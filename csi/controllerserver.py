@@ -4,6 +4,7 @@ controller server implementation
 import json
 import logging
 import os
+import re
 import random
 import time
 
@@ -24,6 +25,19 @@ from volumeutils import (HOSTVOL_MOUNTDIR, check_external_volume,
 
 VOLINFO_DIR = "/var/lib/gluster"
 KADALU_VERSION = os.environ.get("KADALU_VERSION", "latest")
+
+# Safe name pattern for volume names and paths used in commands (CWE-78 prevention)
+_SAFE_CMD_ARG_PATTERN = re.compile(r'^[a-zA-Z0-9._/:-]+$')
+
+# Kubernetes-safe PVC/PV name pattern (CWE-22 prevention)
+_SAFE_K8S_NAME_PATTERN = re.compile(r'^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$')
+
+
+def _validate_cmd_arg(value, field_name):
+    """Validate a value contains only safe characters for use in commands."""
+    if not value or not _SAFE_CMD_ARG_PATTERN.match(str(value)):
+        raise ValueError("Invalid %s: contains unsafe characters: %s" % (field_name, repr(value)))
+    return str(value)
 
 # Generator to be used in ListVolumes
 GEN = None
@@ -47,9 +61,22 @@ def execute_gluster_quota_command(privkey, user, host, gvolname, path, size):
         logging.error(logf(errmsg))
         return errmsg
 
+    # Validate all inputs to prevent command injection via SSH (CWE-78)
+    try:
+        _validate_cmd_arg(gvolname, "gvolname")
+        _validate_cmd_arg(path, "path")
+        _validate_cmd_arg(host, "host")
+        _validate_cmd_arg(user, "user")
+    except ValueError as err:
+        errmsg = "Invalid argument for quota command: %s" % str(err)
+        logging.error(logf(errmsg))
+        return errmsg
+
     quota_cmd = [
         "ssh",
-        "-oStrictHostKeyChecking=no",
+        "-oStrictHostKeyChecking=accept-new",
+        "-oUserKnownHostsFile=/var/lib/gluster/known_hosts",
+        "-oBatchMode=yes",
         "-i",
         "%s" % privkey,
         "%s@%s" % (user, host),
@@ -99,12 +126,21 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
         start_time = time.time()
         logging.debug(logf(
             "Create Volume request",
-            request=request
+            volume_name=request.name,
+            capacity=request.capacity_range.required_bytes if request.capacity_range else None
         ))
 
         if not request.name:
             errmsg = "Volume name is empty and must be provided"
             logging.error(errmsg)
+            context.set_details(errmsg)
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            return csi_pb2.CreateVolumeResponse()
+
+        # Validate volume name format (CWE-22, CWE-78 prevention)
+        if not _SAFE_K8S_NAME_PATTERN.match(request.name) or len(request.name) > 253:
+            errmsg = "Volume name contains invalid characters or exceeds max length"
+            logging.error(logf(errmsg, name=request.name))
             context.set_details(errmsg)
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             return csi_pb2.CreateVolumeResponse()
@@ -116,7 +152,10 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             return csi_pb2.CreateVolumeResponse()
 
-        # Check for same name and different capacity
+        # Check for same name — CSI spec requires CreateVolume to be idempotent.
+        # If a volume already exists with the same name, return it (same size)
+        # or error (different size). Without this early return, retried requests
+        # can create duplicate PVs on different hosting volumes (volume leak).
         volume = search_volume(request.name)
         if volume:
             if volume.size != request.capacity_range.required_bytes:
@@ -125,6 +164,35 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                 context.set_details(errmsg)
                 context.set_code(grpc.StatusCode.ALREADY_EXISTS)
                 return csi_pb2.CreateVolumeResponse()
+
+            # Volume exists with matching capacity — return idempotent response
+            logging.info(logf(
+                "Volume already exists with matching capacity, returning existing",
+                volname=volume.volname,
+                hostvol=volume.hostvol,
+                size=volume.size,
+            ))
+            volume_context = {
+                "hostvol": volume.hostvol,
+                "pvtype": volume.voltype,
+                "fstype": "xfs",
+                "single_pv_per_pool": str(volume.single_pv_per_pool),
+            }
+            if volume.volpath:
+                volume_context["path"] = volume.volpath
+            if volume.extra.get('hostvoltype'):
+                volume_context["type"] = volume.extra['hostvoltype']
+            if volume.extra.get('gvolname'):
+                volume_context["gvolname"] = volume.extra['gvolname']
+            if volume.extra.get('ghost'):
+                volume_context["gserver"] = volume.extra['ghost']
+            return csi_pb2.CreateVolumeResponse(
+                volume={
+                    "volume_id": request.name,
+                    "capacity_bytes": volume.size,
+                    "volume_context": volume_context,
+                }
+            )
 
         pvsize = request.capacity_range.required_bytes
 
@@ -293,6 +361,10 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                             context.set_details(errmsg)
                             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
                             return csi_pb2.CreateVolumeResponse()
+                # Update stat.db so free-size accounting is correct for
+                # External kadalu-type volumes (prevents overprovisioning)
+                update_free_size(ext_volume['name'], request.name, -pvsize)
+
                 logging.info(logf(
                     "Volume created",
                     name=request.name,
@@ -655,7 +727,7 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             errmsg = "Host volume resource is exhausted"
             context.set_details(errmsg)
             context.set_code(grpc.StatusCode.RESOURCE_EXHAUSTED)
-            return csi_pb2.CreateVolumeResponse()
+            return csi_pb2.ControllerExpandVolumeResponse()
 
         hostvoltype = existing_volume.extra['hostvoltype']
 

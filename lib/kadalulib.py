@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import signal
 import socket
 import sqlite3
@@ -60,27 +61,43 @@ def retry_errors(func, args, errors, timeout=130, interval=2):
             raise
 
 
+def _sanitize_name(value):
+    """Sanitize a name to contain only safe characters (alphanumeric, dash, underscore, dot, slash)."""
+    if not re.match(r'^[a-zA-Z0-9._/:-]+$', value):
+        raise ValueError("Invalid characters in name: %s" % repr(value))
+    return value
+
+
 def is_gluster_mount_proc_running(volname, mountpoint):
     """
     Check if glusterfs process is running for the given Volume name
-    to confirm Glusterfs process is mounted
+    to confirm Glusterfs process is mounted.
+    Uses pgrep instead of shell=True pipes to prevent command injection (CWE-78).
     """
     logging.info(logf("check if gluster proc running", volname=volname, mountpoint=mountpoint))
 
-    cmd = (
-            r'ps ax | grep "/glusterfs" '
-            r'| grep -w "\-\-volfile\-id %s" '
-            r'| grep -w "%s"' % (volname, mountpoint)
-    )
+    # Sanitize inputs to prevent injection via pgrep regex
+    volname = _sanitize_name(volname)
+    mountpoint = _sanitize_name(mountpoint)
 
-    with subprocess.Popen(cmd,
-                          shell=True,
-                          stderr=None,
-                          stdout=subprocess.PIPE,
-                          universal_newlines=True) as proc:
-        out, err = proc.communicate()
-        logging.info(logf("check if gluster proc running", cmd=cmd, output=out, returncode=proc.returncode))
-        return proc.returncode == 0
+    # Use pgrep with explicit args instead of shell pipes (CVE: CWE-78)
+    pattern = r"glusterfs.*--volfile-id\s+{vol}.*{mnt}".format(
+        vol=re.escape(volname), mnt=re.escape(mountpoint)
+    )
+    cmd = ["/usr/bin/pgrep", "-f", pattern]
+
+    try:
+        with subprocess.Popen(cmd,
+                              shell=False,
+                              stderr=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE,
+                              universal_newlines=True) as proc:
+            out, _ = proc.communicate(timeout=30)
+            logging.info(logf("check if gluster proc running", pattern=pattern, output=out, returncode=proc.returncode))
+            return proc.returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        logging.warning(logf("pgrep timed out checking gluster mount", error=str(exc)))
+        return False
 
 
 def is_server_pod_reachable(hosts, port=24007, timeout=20):
@@ -91,8 +108,6 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
     Returns False server pods are not reachable even after the timeout.
     """
 
-    socket.setdefaulttimeout(timeout)
-
     for host in hosts:
         retry_count = 0
         while retry_count < 4:
@@ -101,6 +116,8 @@ def is_server_pod_reachable(hosts, port=24007, timeout=20):
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 else:
                     sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                # Set timeout per-socket instead of globally (CWE-362)
+                sock.settimeout(timeout)
                 sock.connect((host, port))
                 sock.close()
                 return True

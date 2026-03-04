@@ -281,9 +281,9 @@ def create_block_volume(pvtype, hostvol_mnt, volname, size):
 
     # at times orchestrator will send same request if earlier request times
     # out and truncate file if doesn't exist since if we reach here the request
-    # is a valid one
-    if not os.path.exists(volpath_full):
-        volpath_fd = os.open(volpath_full, os.O_CREAT | os.O_RDWR)
+    # is a valid one. Use O_EXCL to atomically create-if-not-exists (CWE-367 TOCTOU fix)
+    try:
+        volpath_fd = os.open(volpath_full, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
         os.close(volpath_fd)
         os.truncate(volpath_full, size)
         logging.debug(logf(
@@ -302,6 +302,11 @@ def create_block_volume(pvtype, hostvol_mnt, volname, size):
             ))
 
         save_pv_metadata(hostvol_mnt, volpath, size)
+    except FileExistsError:
+        logging.info(logf(
+            "Block volume file already exists, skipping creation",
+            path=volpath
+        ))
 
     return Volume(
         volname=volname,
@@ -394,8 +399,8 @@ def create_subdir_volume(hostvol_mnt, volname, size, use_gluster_quota):
                       str(size).encode()],
                      [ENOTCONN])
     # noqa # pylint: disable=broad-except
-    except Exception as err:
-        logging.info(logf(
+    except (OSError, IOError) as err:
+        logging.warning(logf(
             "Failed to set quota using simple-quota. Continuing",
             error=err
         ))
@@ -649,6 +654,17 @@ def delete_volume(volname):
 
     volpath = os.path.join(HOSTVOL_MOUNTDIR, vol.hostvol, vol.volpath)
 
+    # Validate path stays within HOSTVOL_MOUNTDIR (CWE-22 path traversal prevention)
+    real_volpath = os.path.realpath(volpath)
+    real_mountdir = os.path.realpath(HOSTVOL_MOUNTDIR)
+    if not real_volpath.startswith(real_mountdir + os.sep):
+        logging.error(logf(
+            "Path traversal detected in delete_volume, refusing to delete",
+            volpath=volpath,
+            resolved=real_volpath
+        ))
+        return
+
     # Stop the delete operation if the reclaim policy is set to "retain"
     if pv_reclaim_policy == "retain":
         logging.info(logf(
@@ -683,6 +699,23 @@ def delete_volume(volname):
                 os.path.join(HOSTVOL_MOUNTDIR, vol.hostvol, "info",
                              path_prefix, info_file_name)
             )
+
+            # Reclaim space in stat.db so the hosting volume's free size
+            # is correctly tracked. Without this, archived PVs permanently
+            # consume accounting space, eventually starving new allocations.
+            try:
+                info_file_path = os.path.join(
+                    HOSTVOL_MOUNTDIR, vol.hostvol, "info",
+                    path_prefix, info_file_name)
+                with open(info_file_path) as info_file:
+                    data = json.load(info_file)
+                update_free_size(vol.hostvol, old_volname, data["size"])
+            except (OSError, KeyError, json.JSONDecodeError) as size_err:
+                logging.warning(logf(
+                    "Failed to update free size after archiving volume",
+                    volname=old_volname,
+                    error=size_err,
+                ))
 
             logging.info(logf(
                 "Volume archived",
@@ -914,26 +947,27 @@ def unmount_glusterfs(mountpoint):
 def unmount_volume(mountpoint):
     """Unmount a Volume"""
     device = ""
-    if mountpoint.find("volumeDevices"):
+    if mountpoint.find("volumeDevices") != -1:
         # Should remove loop device as well or else duplicate loop devices will
         # be setup everytime
-        cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
-        try:
-            device, _, _ = execute(*cmd)
-        except CommandException as ce:
-            if ce.ret == 1:
-                logging.error(logf(
-                    "Mount Point not found",
-                    mount=mountpoint
-                ))
+        if os.path.exists(mountpoint):
+            cmd = ["findmnt", "-T", mountpoint, "-oSOURCE", "-n"]
+            try:
+                device, _, _ = execute(*cmd)
+            except CommandException as ce:
+                if ce.ret == 1:
+                    logging.error(logf(
+                        "Mount Point not found",
+                        mount=mountpoint
+                    ))
 
-            else:
-                raise
+                else:
+                    raise
 
-        if match := re.search(r'loop\d+', device):
-            loop = match.group(0)
-            cmd = ["losetup", "-d", f"/dev/{loop}"]
-            execute(*cmd)
+            if match := re.search(r'loop\d+', device):
+                loop = match.group(0)
+                cmd = ["losetup", "-d", f"/dev/{loop}"]
+                execute(*cmd)
 
     if os.path.ismount(mountpoint):
         execute(UNMOUNT_CMD, mountpoint)
@@ -953,7 +987,16 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
     volname = volume["name"]
 
     if volume['type'] == 'External':
-        return handle_external_volume(volume, mountpoint, is_client, volume['g_host'])
+        try:
+            return handle_external_volume(volume, mountpoint, is_client, volume['g_host'])
+        except Exception as mount_err:
+            logging.warning(logf(
+                "External volume mount failed, returning mountpoint for caller to handle",
+                volume=volname,
+                mountpoint=mountpoint,
+                error=mount_err,
+            ))
+            return mountpoint
 
     with open(os.path.join(VOLINFO_DIR, "%s.info" % volname)) as info_file:
         data = json.load(info_file)
@@ -979,18 +1022,19 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         return mountpoint
 
-    # Ignore if already mounted
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted (2nd try)",
-            mount=mountpoint
-        ))
-        return mountpoint
-
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
 
     with mount_lock:
+        # Re-check inside lock to prevent TOCTOU race where two threads
+        # both pass the above check and then both mount, creating duplicate
+        # FUSE processes (mount leak).
+        if is_gluster_mount_proc_running(volname, mountpoint):
+            logging.debug(logf(
+                "Already mounted (inside lock)",
+                mount=mountpoint
+            ))
+            return mountpoint
         # Fix the log, so we can check it out later
         # log_file = "/var/log/gluster/%s.log" % mountpoint.replace("/", "-")
         log_file = "/var/log/gluster/gluster.log"
@@ -1029,7 +1073,10 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         try:
             (_, err, _) = execute(*cmd)
         except CommandException as err:
-            if err.ret == 32 & is_gluster_mount_proc_running(volname, mountpoint):
+            # Fix: use `and` not `&` — Python precedence makes `32 & bool`
+            # evaluate to 0, so this check was always False, causing the
+            # error to propagate and the caller to retry-mount (FUSE leak).
+            if err.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
                 logging.debug(logf(
                     "Already mounted (code 32)",
                     mount=mountpoint
@@ -1037,12 +1084,12 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
                 return mountpoint
             else:
                 logging.error(logf(
-                "error to execute command",
-                volume=volume,
-                cmd=cmd,
-                error=format(err)
-            ))
-            raise err
+                    "error to execute command",
+                    volume=volume,
+                    cmd=cmd,
+                    error=format(err)
+                ))
+                raise err
 
     return mountpoint
 
@@ -1073,6 +1120,13 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
         with mount_lock:
+            # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
+            if is_gluster_mount_proc_running(volname, mountpoint):
+                logging.debug(logf(
+                    "Already mounted (inside lock)",
+                    mount=mountpoint
+                ))
+                return mountpoint
             mount_glusterfs_with_host(volname,
                                       mountpoint,
                                       hosts,
@@ -1092,20 +1146,22 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     secret_private_key = "/etc/secret-volume/ssh-privatekey"
     secret_username = os.environ.get('SECRET_GLUSTERQUOTA_SSH_USERNAME', None)
 
-    # SSH into only first reachable host in volume['g_host'] entry
-    g_host = reachable_host(hosts)
-
-    if g_host is None:
-        logging.error(logf("All hosts are not reachable"))
-        return
-
     if use_gluster_quota is False:
         logging.debug(logf("Do not set quota-deem-statfs"))
     else:
+        # SSH into only first reachable host in volume['g_host'] entry
+        g_host = reachable_host(hosts)
+
+        if g_host is None:
+            logging.error(logf("All hosts are not reachable"))
+            return
+
         logging.debug(logf("Set quota-deem-statfs for gluster directory Quota"))
         quota_deem_cmd = [
             "ssh",
-            "-oStrictHostKeyChecking=no",
+            "-oStrictHostKeyChecking=accept-new",
+            "-oUserKnownHostsFile=/var/lib/gluster/known_hosts",
+            "-oBatchMode=yes",
             "-i",
             "%s" % secret_private_key,
             "%s@%s" % (secret_username, g_host),
@@ -1181,27 +1237,28 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     try:
         execute(*command)
     except CommandException as excep:
-        if  excep.err.find("invalid option") != -1:
-            logging.info(logf(
+        if  excep.err.find("invalid option") != -1 or excep.err.find("unrecognized option") != -1:
+            logging.warning(logf(
                 "proceeding without supplied incorrect mount options",
                 options=g_ops,
             ))
             command = cmd + [mountpoint]
             try:
                 execute(*command)
-            except CommandException as excep:
-                logging.info(logf(
+            except CommandException as retry_err:
+                logging.error(logf(
                     "mount command failed",
                     cmd=command,
-                    error=excep,
+                    error=retry_err,
                 ))
+                raise retry_err
             return
-        logging.info(logf(
+        logging.error(logf(
             "mount command failed",
             cmd=command,
             error=excep,
         ))
-    return
+        raise excep
 
 
 def check_external_volume(pv_request, host_volumes):

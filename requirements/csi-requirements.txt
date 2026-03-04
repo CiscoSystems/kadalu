@@ -4,11 +4,11 @@
 #
 #    pip-compile --extra=csi --output-file=csi-requirements.txt
 #
-googleapis-common-protos==1.63.2
+googleapis-common-protos==1.66.0
     # via Kadalu (setup.py)
-grpcio==1.63.2
+grpcio==1.68.1
     # via Kadalu (setup.py)
-protobuf==5.26.1
+protobuf==5.29.6
     # via
     #   Kadalu (setup.py)
     #   googleapis-common-protos

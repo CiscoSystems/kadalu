@@ -854,7 +854,16 @@ def watch_stream(core_v1_client, k8s_client):
     """
     crds = client.CustomObjectsApi(k8s_client)
     k8s_watch = watch.Watch()
-    resource_version = ""
+    initial_list = crds.list_cluster_custom_object("kadalu-operator.storage",
+                                                   "v1alpha1",
+                                                   "kadalustorages")
+
+    for item in initial_list.get("items"):
+        handle_added(core_v1_client, item)
+
+    metadata = initial_list.get("metadata")
+    resource_version = metadata['resourceVersion']
+
     for event in k8s_watch.stream(crds.list_cluster_custom_object,
                                   "kadalu-operator.storage",
                                   "v1alpha1",
@@ -1046,9 +1055,8 @@ def main():
 if __name__ == "__main__":
     logging_setup()
 
-    # This not advised in general, but in kadalu's operator, it is OK to
-    # ignore these warnings as we know to make calls only inside of
-    # kubernetes cluster
-    urllib3.disable_warnings()
+    # Only suppress the specific InsecureRequestWarning when running
+    # inside Kubernetes cluster with in-cluster config (CWE-295 mitigation)
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     main()

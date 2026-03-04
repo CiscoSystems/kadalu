@@ -3,6 +3,7 @@ Starting point of CSI driver GRP server
 """
 import logging
 import os
+import sys
 import time
 from concurrent import futures
 
@@ -56,7 +57,14 @@ def main():
     csi_pb2_grpc.add_NodeServicer_to_server(NodeServer(), server)
     csi_pb2_grpc.add_IdentityServicer_to_server(IdentityServer(), server)
 
-    server.add_insecure_port(os.environ.get("CSI_ENDPOINT", "unix://plugin/csi.sock"))
+    # Validate CSI_ENDPOINT is a Unix domain socket (CWE-319 prevention)
+    csi_endpoint = os.environ.get("CSI_ENDPOINT", "unix://plugin/csi.sock")
+    if not csi_endpoint.startswith("unix://"):
+        logging.error("CSI_ENDPOINT must use unix:// scheme, refusing to start with: %s",
+                      csi_endpoint.split("://")[0] + "://...")
+        sys.exit(1)
+
+    server.add_insecure_port(csi_endpoint)
     logging.info("Server started")
     server.start()
     try:
