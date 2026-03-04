@@ -8,7 +8,7 @@ ENV VIRTUAL_ENV=/kadalu
 ENV PATH="$VIRTUAL_ENV/bin:/opt/sbin:/opt/bin:$PATH"
 
 RUN apt-get update -yq && \
-    apt-get install -y --no-install-recommends curl xfsprogs net-tools telnet wget e2fsprogs zlib1g-dev liburcu6\
+    apt-get install -y --no-install-recommends curl xfsprogs net-tools telnet wget e2fsprogs zlib1g-dev liburcu8\
     sqlite3 build-essential g++ flex bison openssl libssl-dev libtirpc-dev liburcu-dev \
     libfuse-dev libuuid1 uuid-dev acl-dev libtool automake autoconf git pkg-config \
     libffi-dev google-perftools libgoogle-perftools-dev libtcmalloc-minimal4 libgoogle-perftools4 && \

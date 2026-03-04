@@ -1,4 +1,4 @@
-ARG builder_version="1.1.0"
+ARG builder_version="1.2.0"
 FROM  dockerhub.cisco.com/robot-dockerprod/kadalu-builder:${builder_version} as builder
 
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
