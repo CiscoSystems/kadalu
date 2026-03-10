@@ -107,6 +107,14 @@ spec:
               add: ["CAP_SYS_ADMIN", "SYS_ADMIN"]
             allowPrivilegeEscalation: true
           image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi:###tag###
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9808
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 5
           env:
             - name: NODE_ID
               valueFrom:
