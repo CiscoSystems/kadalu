@@ -9,7 +9,7 @@ COPY requirements/server-requirements.txt /tmp/
 RUN python3 -m pip install -r /tmp/server-requirements.txt --no-cache-dir && \
     grep -Po '^[\w\.-]*(?=)' /tmp/server-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20250805-607185b.11 as prod
+FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20260217-ab71f63.22 as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/kadalu/bin:/opt/bin:/opt/sbin:$PATH"
