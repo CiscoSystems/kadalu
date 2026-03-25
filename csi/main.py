@@ -5,7 +5,9 @@ import logging
 import os
 import sys
 import time
+import threading
 from concurrent import futures
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import csi_pb2_grpc
 import grpc
@@ -17,6 +19,37 @@ from volumeutils import (HOSTVOL_MOUNTDIR, get_pv_hosting_volumes,
                          mount_glusterfs)
 
 _ONE_DAY_IN_SECONDS = 60 * 60 * 24
+HEALTH_PORT = 9808
+
+# Reference to the gRPC server, set in main() for health checks
+_grpc_server = None
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler for liveness probes."""
+
+    def do_GET(self):  # noqa: N802
+        if self.path == "/healthz":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):  # noqa: A002
+        # Suppress per-request log spam from kubelet probes
+        pass
+
+
+def start_health_server():
+    """Start the liveness health HTTP server on a daemon thread."""
+    srv = HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    logging.info(logf("Health server started", port=HEALTH_PORT))
+
 
 def mount_storage():
     """
@@ -48,6 +81,10 @@ def main():
     the GRPC server in required endpoint
     """
     logging_setup()
+
+    # Start health endpoint for kubelet liveness probes
+    if os.environ.get("CSI_ROLE", "-") == "provisioner":
+        start_health_server()
 
     # If Provisioner pod reboots, mount volumes if they exist before reboot
     mount_storage()

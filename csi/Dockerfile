@@ -13,7 +13,7 @@ RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install netaddr && \
     grep -Po '^[\w\.-]*(?=)' /tmp/csi-requirements.txt | xargs -I pkg python3 -m pip show pkg | grep -P '^(Name|Version|Location)'
 
-FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20250805-607185b.11 as prod
+FROM dockerhub.cisco.com/robot-dockerprod/cw-ubuntu-base:24.04.20260217-ab71f63.22 as prod
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -39,6 +39,11 @@ MKFS_XFS_CMD = "/sbin/mkfs.xfs"
 XFS_GROWFS_CMD = "/sbin/xfs_growfs"
 RESERVED_SIZE_PERCENTAGE = 10
 HOSTVOL_MOUNTDIR = "/mnt"
+# When CREATE_MOUNT_ON_VMEXEC is True, mounts run on the HOST via vmexec.
+# The host mount path is /mnt/cw_glusterfs/kadalu/<vol>, not /mnt/<vol>.
+# This matches nodeserver.py which already uses the correct host path.
+if vmexecMnt == "True":
+    HOSTVOL_MOUNTDIR = os.environ.get("VMEXEC_HOST_MOUNTDIR", "/mnt/cw_glusterfs/kadalu")
 VOLFILES_DIR = "/kadalu/volfiles"
 VOLINFO_DIR = "/var/lib/gluster"
 HOST_IP = os.environ.get('HOST_IP')
@@ -1122,6 +1127,8 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
         with mount_lock:
             # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
             if is_gluster_mount_proc_running(volname, mountpoint):
+                if not os.path.exists(mountpoint):
+                    makedirs(mountpoint)
                 logging.debug(logf(
                     "Already mounted (inside lock)",
                     mount=mountpoint
@@ -1133,6 +1140,8 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
                                       volume['g_options'],
                                       is_client)
     else:
+        if not os.path.exists(mountpoint):
+            makedirs(mountpoint)
         logging.debug(logf(
             "Already mounted",
             mount=mountpoint
