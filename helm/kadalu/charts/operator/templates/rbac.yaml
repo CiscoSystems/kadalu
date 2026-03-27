@@ -6,7 +6,6 @@ metadata:
 rules:
   - apiGroups:
       - storage.k8s.io
-      - csi.storage.k8s.io
     resources:
       - csidrivers
       - storageclasses

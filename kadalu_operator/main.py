@@ -915,9 +915,10 @@ def deploy_csi_pods(core_v1_client):
 
     # Deploy CSI Pods
     api_instance = client.VersionApi().get_code()
+    k8s_major = int(re.sub(r'[^0-9]', '', api_instance.major))
+    k8s_minor = int(re.sub(r'[^0-9]', '', api_instance.minor))
 
-    if api_instance.major > "1" or api_instance.major == "1" and \
-       api_instance.minor >= "22":
+    if k8s_major > 1 or (k8s_major == 1 and k8s_minor >= 22):
 
         csi_driver_version = csi_driver_object_api_version()
         if csi_driver_version is not None and \
@@ -932,11 +933,11 @@ def deploy_csi_pods(core_v1_client):
         template(filename, namespace=NAMESPACE, kadalu_version=VERSION)
         lib_execute(KUBECTL_CMD, APPLY_CMD, "-f", filename)
 
-    elif api_instance.major > "1" or api_instance.major == "1" and \
-       api_instance.minor >= "14":
-        filename = os.path.join(MANIFESTS_DIR, "csi-driver-object.yaml")
-        template(filename, namespace=NAMESPACE, kadalu_version=VERSION)
-        lib_execute(KUBECTL_CMD, APPLY_CMD, "-f", filename)
+    else:
+        logging.warning(logf(
+            "Kubernetes version too old, CSIDriver v1 requires >= 1.22",
+            major=k8s_major, minor=k8s_minor
+        ))
 
     filename = os.path.join(MANIFESTS_DIR, "csi.yaml")
     docker_user = os.environ.get("DOCKER_USER", "kadalu")
