@@ -3,6 +3,7 @@ Starting point of CSI driver GRP server
 """
 import logging
 import os
+import socket
 import sys
 import time
 import threading
@@ -25,6 +26,17 @@ HEALTH_PORT = 9808
 _grpc_server = None
 
 
+def _ipv6_supported():
+    """Return True if the system can bind an IPv6 socket."""
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        sock.bind(("::", 0))
+        sock.close()
+        return True
+    except OSError:
+        return False
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     """Minimal HTTP handler for liveness probes."""
 
@@ -45,7 +57,20 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     """Start the liveness health HTTP server on a daemon thread."""
-    srv = HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler)
+    if _ipv6_supported():
+        class _Server(HTTPServer):
+            address_family = socket.AF_INET6
+            def server_bind(self):
+                # Allow dual-stack (IPv4+IPv6) where the kernel permits it
+                try:
+                    self.socket.setsockopt(
+                        socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                except OSError:
+                    pass  # Kernel enforces v6-only; kubelet probes via IPv6
+                super().server_bind()
+        srv = _Server(("::", HEALTH_PORT), HealthHandler)
+    else:
+        srv = HTTPServer(("0.0.0.0", HEALTH_PORT), HealthHandler)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     logging.info(logf("Health server started", port=HEALTH_PORT))
