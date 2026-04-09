@@ -9,7 +9,7 @@ import time
 import csi_pb2
 import csi_pb2_grpc
 import grpc
-from kadalulib import logf
+from kadalulib import CommandException, logf
 from volumeutils import mount_glusterfs, mount_volume, unmount_volume, verify_mount
 
 HOSTVOL_MOUNTDIR = "/mnt/cw_glusterfs/kadalu"
@@ -152,7 +152,7 @@ class NodeServer(csi_pb2_grpc.NodeServicer):
                           error=str(unmount_err)
                       ))
                   raise OSError("Mount verification failed.")
-        except (OSError, IOError, ConnectionError) as e:
+        except (OSError, IOError, ConnectionError, CommandException) as e:
             retry_count += 1
             logging.warning(logf(
                 "Retrying mount due to failure",
