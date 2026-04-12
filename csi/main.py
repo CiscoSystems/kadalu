@@ -3,6 +3,7 @@ Starting point of CSI driver GRP server
 """
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -129,6 +130,16 @@ def main():
     server.add_insecure_port(csi_endpoint)
     logging.info("Server started")
     server.start()
+
+    # Handle SIGHUP gracefully — watch-vol-changes.sh sends SIGHUP on
+    # configmap updates.  Without this handler Python's default is to
+    # terminate, which tears down the gRPC socket and causes the
+    # csi-provisioner / csi-attacher sidecars to lose their connection.
+    def _handle_sighup(_signum, _frame):
+        logging.info("Received SIGHUP, ignoring (configmap reload handled by volfile watcher)")
+
+    signal.signal(signal.SIGHUP, _handle_sighup)
+
     try:
         while True:
             time.sleep(_ONE_DAY_IN_SECONDS)

@@ -25,6 +25,9 @@ if [ -d ${CONFIG_MAP_DATA_DIR} ]; then
     echo "Catched update on kadalu-info CM: $line"
     update_csi_process_id
     kill -HUP "$CSI_PROCESS_ID"
+
+    # Avoid catching multiple modify events on the dir
+    sleep 10
   done
 else
   while true; do
