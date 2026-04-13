@@ -1018,6 +1018,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             "None of the server pods are reachable",
             volume=volume
         ))
+        raise
 
     # Ignore if already glusterfs process running for that volume
     if is_gluster_mount_proc_running(volname, mountpoint):
@@ -1246,6 +1247,12 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     try:
         execute(*command)
     except CommandException as excep:
+        if excep.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
+            logging.debug(logf(
+                "Already mounted (code 32)",
+                mount=mountpoint,
+            ))
+            return
         if  excep.err.find("invalid option") != -1 or excep.err.find("unrecognized option") != -1:
             logging.warning(logf(
                 "proceeding without supplied incorrect mount options",
@@ -1255,6 +1262,12 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
             try:
                 execute(*command)
             except CommandException as retry_err:
+                if retry_err.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
+                    logging.debug(logf(
+                        "Already mounted (code 32)",
+                        mount=mountpoint,
+                    ))
+                    return
                 logging.error(logf(
                     "mount command failed",
                     cmd=command,
