@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import socket as _socket
 import threading
 import time
 from random import sample
@@ -1192,6 +1193,18 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     return mountpoint
 
 
+def _is_ipv6_host(host):
+    """Check if host is an IPv6 address or a hostname that resolves to IPv6.
+    Needed because GlusterFS 11.1 workaround uses hostnames instead of raw IPv6."""
+    if netaddr.valid_ipv6(host):
+        return True
+    try:
+        addrinfo = _socket.getaddrinfo(host, None, _socket.AF_INET6)
+        return len(addrinfo) > 0
+    except _socket.gaierror:
+        return False
+
+
 # noqa # pylint: disable=unused-argument
 def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_client=False):
     """Mount Glusterfs Volume"""
@@ -1211,7 +1224,7 @@ def mount_glusterfs_with_host(volname, mountpoint, hosts, options=None, is_clien
     ## on server component we can mount glusterfs with client-pid
     # if not is_client:
     #    cmd.extend(["--client-pid", "-14"])
-    if netaddr.valid_ipv6(hosts.split(',')[0]):
+    if _is_ipv6_host(hosts.split(',')[0]):
         cmd.extend(["--xlator-option", "transport.address-family=inet6"])
         logging.info(logf(
             "proceeding with v6 xlator",
