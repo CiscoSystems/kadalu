@@ -64,6 +64,7 @@ COPY csi/watch-vol-changes.sh  /kadalu/
 COPY csi/client_heal.sh        /kadalu/
 COPY csi/remove_archived_pv.py /kadalu/
 COPY csi/watch-logrotate.sh    /kadalu/
+COPY csi/sync-gluster-hosts.sh /kadalu/
 
 COPY extras/kadalu-logrotate.conf     /kadalu/logrotate.conf
 

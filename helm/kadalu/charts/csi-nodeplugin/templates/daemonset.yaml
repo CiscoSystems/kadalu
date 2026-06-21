@@ -97,6 +97,16 @@ spec:
               mountPath: /mnt/
             - name: glusterfs-vol
               mountPath: /var/run/vmexec-socket/
+            # Host /etc/hosts: the glusterfs fuse mount runs on the host (via the
+            # vmexec service) so the host must resolve gluster-node-<N>. The
+            # gluster-hosts-sync proc reconciles the managed block here.
+            - name: host-etc-hosts
+              mountPath: /host/etc/hosts
+            # IP->hostname mapping published by the orchestrator. Optional so
+            # the pod still starts on IPv4 clusters where it is never created.
+            - name: gluster-hosts-map
+              mountPath: /var/lib/kadalu-hostmap
+              readOnly: true
         - name: kadalu-logging
           image: docker.io/library/busybox:latest
           imagePullPolicy: IfNotPresent
@@ -136,3 +146,11 @@ spec:
         - name: glusterfs-vol
           hostPath: 
             path: /var/run/vmexec-socket/
+        - name: host-etc-hosts
+          hostPath:
+            path: /etc/hosts
+            type: FileOrCreate
+        - name: gluster-hosts-map
+          configMap:
+            name: kadalu-gluster-hosts
+            optional: true
