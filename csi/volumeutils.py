@@ -23,7 +23,8 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-from vmexec_socketclient import execute_vmexec, is_gl_mount_vmexec
+from vmexec_socketclient import (execute_vmexec, is_gl_mount_vmexec,
+                                 lock_manager)
 
 # Cisco vmexec monkey patches
 vmexecMnt = os.environ.get("CREATE_MOUNT_ON_VMEXEC", "False")
@@ -49,7 +50,11 @@ VOLINFO_DIR = "/var/lib/gluster"
 HOST_IP = os.environ.get('HOST_IP')
 
 statfile_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
-mount_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
+
+# Mounts are guarded per mountpoint via lock_manager, not by one global lock:
+# the double-mount race is between two threads handling the same mountpoint,
+# whereas a global lock made every volume wait out the slowest mount on the
+# node, pinning a gRPC worker per waiter until the pool ran dry.
 
 
 class Volume():
@@ -945,7 +950,7 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
+        with lock_manager.get_lock(mountpoint):
             execute("/usr/bin/fusermount", "-u", mountpoint)
 
 
@@ -1031,7 +1036,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
 
-    with mount_lock:
+    with lock_manager.get_lock(mountpoint):
         # Re-check inside lock to prevent TOCTOU race where two threads
         # both pass the above check and then both mount, creating duplicate
         # FUSE processes (mount leak).
@@ -1125,7 +1130,7 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     # Try to mount the Host Volume, handle failure if
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
+        with lock_manager.get_lock(mountpoint):
             # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
             if is_gluster_mount_proc_running(volname, mountpoint):
                 if not os.path.exists(mountpoint):

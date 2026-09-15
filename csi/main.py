@@ -23,6 +23,11 @@ from volumeutils import (HOSTVOL_MOUNTDIR, get_pv_hosting_volumes,
 _ONE_DAY_IN_SECONDS = 60 * 60 * 24
 HEALTH_PORT = 9808
 
+# Every NodePublishVolume holds a worker for the duration of the glusterfs
+# mount it runs over vmexec, so the pool has to out-size the number of PVs
+# kubelet can ask a single node to attach in parallel.
+CSI_MAX_WORKERS = int(os.environ.get("CSI_MAX_WORKERS", "64"))
+
 # Reference to the gRPC server, set in main() for health checks
 _grpc_server = None
 
@@ -115,7 +120,8 @@ def main():
     # If Provisioner pod reboots, mount volumes if they exist before reboot
     mount_storage()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=CSI_MAX_WORKERS))
     csi_pb2_grpc.add_ControllerServicer_to_server(ControllerServer(), server)
     csi_pb2_grpc.add_NodeServicer_to_server(NodeServer(), server)
     csi_pb2_grpc.add_IdentityServicer_to_server(IdentityServer(), server)

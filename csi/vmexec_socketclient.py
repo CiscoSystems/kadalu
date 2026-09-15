@@ -29,6 +29,11 @@ SOCKET_TIMEOUT = int(os.environ.get("VMEXEC_SOCKET_TIMEOUT", "900"))
 # Timeout sent to vmexec server for command execution (seconds)
 VMEXEC_CMD_TIMEOUT = int(os.environ.get("VMEXEC_CMD_TIMEOUT", "800"))
 
+# Connect timeout, kept short: a vmexec that holds the socket open but never
+# accepts would otherwise block connect() forever, since the default socket
+# has no timeout until settimeout() runs after connect (CWE-400)
+VMEXEC_CONNECT_TIMEOUT = int(os.environ.get("VMEXEC_CONNECT_TIMEOUT", "10"))
+
 # Maximum response size from vmexec server (16 KB)
 MAX_RESPONSE_SIZE = 16384
 
@@ -61,9 +66,11 @@ def connect_socket(client_socket):
     connected = False
     while retry_count < max_retries and not connected:
         try:
-            # Attempt to connect to the server
+            # Attempt to connect to the server, bounded so a server that
+            # never accepts cannot block this thread indefinitely (CWE-400)
+            client_socket.settimeout(VMEXEC_CONNECT_TIMEOUT)
             client_socket.connect(SOCKET_FILE_PATH)
-            # Set socket timeout after connection to prevent indefinite blocking (CWE-400)
+            # Raise to the command timeout for the send/recv phase
             client_socket.settimeout(SOCKET_TIMEOUT)
             connected = True
             logging.debug("Socket connected to the vmexec!")
@@ -73,6 +80,13 @@ def connect_socket(client_socket):
             logging.debug("Connection refused. Retrying in %d seconds...", retry_interval)
             time.sleep(retry_interval)
             retry_count += 1
+        except socket.timeout:
+            # Listening but not accepting.  Not retried on this socket: a
+            # timed-out connect leaves it unusable, and the caller is better
+            # off getting its thread back than waiting out the retries.
+            logging.error("Timed out connecting to vmexec after %ds",
+                          VMEXEC_CONNECT_TIMEOUT)
+            break
 
     return connected
 
