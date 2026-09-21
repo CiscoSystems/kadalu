@@ -28,9 +28,10 @@ HEALTH_PORT = 9808
 # kubelet can ask a single node to attach in parallel.  Undersizing it starves
 # the trivial RPCs too: a NodeGetCapabilities that only returns a static list
 # still needs a worker, and kubelet reports its timeout as a failed
-# STAGE_UNSTAGE_VOLUME check rather than as a busy plugin.  Load shedding
-# belongs on the vmexec calls themselves, not here, so that the RPCs which
-# never touch vmexec stay responsive while the host is saturated.
+# STAGE_UNSTAGE_VOLUME check rather than as a busy plugin.  What keeps this
+# pool from filling is VMEXEC_MAX_INFLIGHT in vmexec_socketclient, which caps
+# round trips below this number so the RPCs that never touch vmexec always
+# have a worker; raising the pool alone only moves the point where it happens.
 CSI_MAX_WORKERS = int(os.environ.get("CSI_MAX_WORKERS", "64"))
 
 # Reference to the gRPC server, set in main() for health checks

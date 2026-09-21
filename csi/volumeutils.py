@@ -1004,7 +1004,8 @@ def is_mountpoint(path):
     # path inside a wedged gluster mount would block in exactly the way the
     # stat this function replaces did.
     parent = os.path.dirname(target)
-    if not parent.startswith(HOSTVOL_MOUNTDIR.rstrip(os.sep) + os.sep):
+    pool_root = HOSTVOL_MOUNTDIR.rstrip(os.sep)
+    if parent != pool_root and not parent.startswith(pool_root + os.sep):
         targets.add(os.path.join(os.path.realpath(parent),
                                  os.path.basename(target)))
 

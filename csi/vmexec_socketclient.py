@@ -38,6 +38,71 @@ VMEXEC_CONNECT_TIMEOUT = int(os.environ.get("VMEXEC_CONNECT_TIMEOUT", "10"))
 # Maximum response size from vmexec server (16 KB)
 MAX_RESPONSE_SIZE = 16384
 
+# A worker inside a vmexec round trip is stuck there until the host answers or
+# SOCKET_TIMEOUT expires, and the gRPC pool is the only bound on how many can
+# be.  Once every worker is in one, the RPCs that touch no storage at all --
+# NodeGetCapabilities, Probe -- have no thread left to run on, and kubelet
+# reports that as a plugin missing STAGE_UNSTAGE_VOLUME rather than as a busy
+# one.  Capping round trips below the worker count keeps a reserve those RPCs
+# can always use, so a wedged host costs volume operations but never the whole
+# plugin.  Mirrors the CSI_MAX_WORKERS default in main.py.
+# The reserve is small on purpose.  The RPCs it protects answer in
+# microseconds without touching storage, so a handful of workers serve far
+# more of them than kubelet will ever ask for, and every worker added to the
+# reserve is one taken away from doing real mount work during a bulk attach.
+_CSI_MAX_WORKERS = int(os.environ.get("CSI_MAX_WORKERS", "64"))
+VMEXEC_WORKER_RESERVE = int(os.environ.get("VMEXEC_WORKER_RESERVE", "8"))
+VMEXEC_MAX_INFLIGHT = int(os.environ.get(
+    "VMEXEC_MAX_INFLIGHT", max(1, _CSI_MAX_WORKERS - VMEXEC_WORKER_RESERVE)))
+_vmexec_slots = threading.BoundedSemaphore(VMEXEC_MAX_INFLIGHT)
+
+VMEXEC_BUSY = "vmexec busy: %d concurrent operations already in flight" \
+              % VMEXEC_MAX_INFLIGHT
+
+# Shedding happens in bursts by nature, and a line per refusal would bury the
+# storm it is reporting under thousands of copies of itself.  One line per
+# interval carries the same news and brings the count with it.
+VMEXEC_SHED_LOG_INTERVAL = int(os.environ.get("VMEXEC_SHED_LOG_INTERVAL", "10"))
+_shed_state = {"last": 0.0, "suppressed": 0}
+_shed_lock = threading.Lock()
+
+
+def _log_shed(cmd_str):
+    """Report a refusal, at most once per interval, with what it stands for."""
+    with _shed_lock:
+        _shed_state["suppressed"] += 1
+        now = time.monotonic()
+        if now - _shed_state["last"] < VMEXEC_SHED_LOG_INTERVAL:
+            return
+        count = _shed_state["suppressed"]
+        _shed_state["last"] = now
+        _shed_state["suppressed"] = 0
+
+    logging.warning(
+        "Shedding vmexec commands: %d refused in the last %ds with %d already "
+        "in flight, most recently %s.  Workers are being held by a host that "
+        "is not answering; kubelet will retry these.",
+        count, VMEXEC_SHED_LOG_INTERVAL, VMEXEC_MAX_INFLIGHT, cmd_str)
+
+
+@contextmanager
+def vmexec_inflight(cmd_str):
+    """
+    Hold one of the vmexec round-trip slots, or refuse.
+
+    Refusing is the point.  Waiting for a slot would occupy the worker this
+    exists to keep free, so a caller over budget fails immediately instead;
+    kubelet already retries every volume RPC, and a retry that finds the host
+    healthy costs far less than a plugin that answers nothing.
+    """
+    if not _vmexec_slots.acquire(blocking=False):
+        _log_shed(cmd_str)
+        raise CommandException(-1, cmd_str, VMEXEC_BUSY)
+    try:
+        yield
+    finally:
+        _vmexec_slots.release()
+
 # List of commands intercepted and sent to the command execution conduit
 cmdList = ["glusterfs", "/mount", "/umount", "/fusermount", "losetup", "pgrep"]
 
@@ -184,7 +249,8 @@ def socket_client(commandList):
     }
 
     logging.debug("Connecting socket")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
+    with vmexec_inflight(cmd_str), \
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client_socket:
 
         is_connected = connect_socket(client_socket)
         if not is_connected:
