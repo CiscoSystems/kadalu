@@ -14,6 +14,7 @@ import time
 import uuid
 import logging
 from collections import defaultdict
+from contextlib import contextmanager
 
 from kadalulib import (execute, CommandException)
 
@@ -45,14 +46,54 @@ is_debug = os.environ.get("DEBUG", "False")
 
 # TODO - Should use the cleanup once volumes are removed
 class volume_lock_manager:
+    # Mount exclusion and the per-pool size accounting both hang off this map
+    # now that the global locks are gone, so handing two callers different
+    # lock objects for one name silently undoes that exclusion and lets two
+    # threads mount the same point.  defaultdict only inserts atomically while
+    # the GIL is held, so the map is guarded rather than relying on that.
     def __init__(self):
         self.locks = defaultdict(threading.Lock)
+        self.users = defaultdict(int)
+        self._guard = threading.Lock()
+
+    @contextmanager
+    def hold(self, name):
+        """
+        Hold the lock for name for the duration of the block.
+
+        The caller is registered before the lock is taken, and that is what
+        makes del_lock() safe: dropping a name between another thread looking
+        its lock up and acquiring it would leave the next caller creating a
+        second lock for the same name, and both would enter a section each
+        believes it holds alone.  A name in use is never dropped.
+        """
+        with self._guard:
+            lock = self.locks[name]
+            self.users[name] += 1
+        try:
+            with lock:
+                yield
+        finally:
+            with self._guard:
+                self.users[name] -= 1
 
     def get_lock(self, name):
-        return self.locks[name]
+        """
+        The lock for name, for callers that acquire it themselves.
+
+        Prefer hold(): a lock taken this way is invisible to del_lock().
+        """
+        with self._guard:
+            return self.locks[name]
 
     def del_lock(self, name):
-        self.locks.pop(name, None)
+        """Forget a name's lock.  Declines while a caller is holding it."""
+        with self._guard:
+            if self.users.get(name):
+                return False
+            self.locks.pop(name, None)
+            self.users.pop(name, None)
+            return True
 
 # Create a named volume lock manager
 lock_manager = volume_lock_manager()

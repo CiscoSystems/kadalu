@@ -294,7 +294,7 @@ def update_free_size(hostvol, pvname, sizechange):
     # Check for mount availability before updating the free size
     retry_errors(os.statvfs, [mntdir], [ENOTCONN])
 
-    with lock_manager.get_lock(STATFILE_LOCK_PREFIX + hostvol):
+    with lock_manager.hold(STATFILE_LOCK_PREFIX + hostvol):
         with SizeAccounting(hostvol, mntdir) as acc:
             # Reclaim space
             if sizechange > 0:
@@ -310,7 +310,7 @@ def mount_and_select_hosting_volume(pv_hosting_volumes, required_size):
         mntdir = os.path.join(HOSTVOL_MOUNTDIR, hvol)
         mount_glusterfs(volume, mntdir)
 
-        with lock_manager.get_lock(STATFILE_LOCK_PREFIX + hvol):
+        with lock_manager.hold(STATFILE_LOCK_PREFIX + hvol):
             # Stat done before `os.path.exists` to prevent ignoring
             # file not exists even in case of ENOTCONN
             mntdir_stat = retry_errors(os.statvfs, [mntdir], [ENOTCONN])
@@ -519,7 +519,7 @@ def is_hosting_volume_free(hostvol, requested_pvsize):
     """Check if host volume is free to expand or create (external)volume"""
 
     mntdir = os.path.join(HOSTVOL_MOUNTDIR, hostvol)
-    with lock_manager.get_lock(STATFILE_LOCK_PREFIX + hostvol):
+    with lock_manager.hold(STATFILE_LOCK_PREFIX + hostvol):
 
         # Stat done before `os.path.exists` to prevent ignoring
         # file not exists even in case of ENOTCONN
@@ -992,6 +992,22 @@ def is_mountpoint(path):
     nothing.
     """
     target = os.path.normpath(path)
+    targets = {target}
+
+    # mountinfo records the canonical path, so on a node that symlinks its
+    # kubelet root onto another disk nothing would ever match by string and
+    # unmount_volume() would skip every umount it was asked to make, leaking
+    # the mounts this is meant to clean up.  os.path.ismount() did not have
+    # that problem because the kernel resolved the path for it.  Only the
+    # parent is resolved, and only outside the pool mounts: the parent of a
+    # kubelet target is an ordinary directory on the node, whereas resolving a
+    # path inside a wedged gluster mount would block in exactly the way the
+    # stat this function replaces did.
+    parent = os.path.dirname(target)
+    if not parent.startswith(HOSTVOL_MOUNTDIR.rstrip(os.sep) + os.sep):
+        targets.add(os.path.join(os.path.realpath(parent),
+                                 os.path.basename(target)))
+
     with open("/proc/self/mountinfo") as mountinfo:
         for line in mountinfo:
             # mountID parentID major:minor root mountPoint ...
@@ -1005,7 +1021,7 @@ def is_mountpoint(path):
                                    .replace("\\011", "\t") \
                                    .replace("\\012", "\n") \
                                    .replace("\\134", "\\")
-            if mount_point == target:
+            if mount_point in targets:
                 return True
 
     return False
@@ -1057,7 +1073,7 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        with lock_manager.get_lock(mountpoint):
+        with lock_manager.hold(mountpoint):
             execute("/usr/bin/fusermount", "-u", mountpoint)
             forget_mount(mountpoint)
 
@@ -1154,7 +1170,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
 
-    with lock_manager.get_lock(mountpoint):
+    with lock_manager.hold(mountpoint):
         # Re-check inside lock to prevent TOCTOU race where two threads
         # both pass the above check and then both mount, creating duplicate
         # FUSE processes (mount leak).
@@ -1252,7 +1268,7 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     # Try to mount the Host Volume, handle failure if
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
-        with lock_manager.get_lock(mountpoint):
+        with lock_manager.hold(mountpoint):
             # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
             if is_gluster_mount_proc_running(volname, mountpoint):
                 if not os.path.exists(mountpoint):
