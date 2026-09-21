@@ -25,7 +25,12 @@ HEALTH_PORT = 9808
 
 # Every NodePublishVolume holds a worker for the duration of the glusterfs
 # mount it runs over vmexec, so the pool has to out-size the number of PVs
-# kubelet can ask a single node to attach in parallel.
+# kubelet can ask a single node to attach in parallel.  Undersizing it starves
+# the trivial RPCs too: a NodeGetCapabilities that only returns a static list
+# still needs a worker, and kubelet reports its timeout as a failed
+# STAGE_UNSTAGE_VOLUME check rather than as a busy plugin.  Load shedding
+# belongs on the vmexec calls themselves, not here, so that the RPCs which
+# never touch vmexec stay responsive while the host is saturated.
 CSI_MAX_WORKERS = int(os.environ.get("CSI_MAX_WORKERS", "64"))
 
 # Reference to the gRPC server, set in main() for health checks
