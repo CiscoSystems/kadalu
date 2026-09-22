@@ -152,11 +152,27 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             return csi_pb2.CreateVolumeResponse()
 
+        # Add everything from parameter as filter item
+        filters = {}
+        for pkey, pvalue in request.parameters.items():
+            filters[pkey] = pvalue
+
+        logging.debug(logf(
+            "Filters applied to choose storage",
+            **filters
+        ))
+
         # Check for same name — CSI spec requires CreateVolume to be idempotent.
         # If a volume already exists with the same name, return it (same size)
         # or error (different size). Without this early return, retried requests
         # can create duplicate PVs on different hosting volumes (volume leak).
-        volume = search_volume(request.name)
+        #
+        # The filters are passed so only the hosting volumes that could serve
+        # this request are mounted and searched. A prior attempt for this PVC
+        # ran with the same storage class, so it can only have placed the PV on
+        # a hosting volume these same filters accept, and narrowing the search
+        # cannot miss it and leak a duplicate.
+        volume = search_volume(request.name, filters)
         if volume:
             if volume.size != request.capacity_range.required_bytes:
                 errmsg = "Failed to create volume with same name with different capacity"
@@ -231,16 +247,6 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
         ))
 
         # TODO: Check the available space under lock
-
-        # Add everything from parameter as filter item
-        filters = {}
-        for pkey, pvalue in request.parameters.items():
-            filters[pkey] = pvalue
-
-        logging.debug(logf(
-            "Filters applied to choose storage",
-            **filters
-        ))
 
         # UID is stored at the time of installation in configmap.
         uid = None

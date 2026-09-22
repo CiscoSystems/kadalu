@@ -9,6 +9,7 @@ import re
 import shutil
 import threading
 import time
+from collections import defaultdict
 from random import sample
 import subprocess
 
@@ -23,7 +24,8 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
                        reachable_host, retry_errors, get_single_pv_per_pool,
                        is_server_pod_reachable)
 
-from vmexec_socketclient import execute_vmexec, is_gl_mount_vmexec
+from vmexec_socketclient import (execute_vmexec, is_gl_mount_vmexec,
+                                 lock_manager)
 
 # Cisco vmexec monkey patches
 vmexecMnt = os.environ.get("CREATE_MOUNT_ON_VMEXEC", "False")
@@ -48,8 +50,62 @@ VOLFILES_DIR = "/kadalu/volfiles"
 VOLINFO_DIR = "/var/lib/gluster"
 HOST_IP = os.environ.get('HOST_IP')
 
-statfile_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
-mount_lock = threading.Lock()    # noqa # pylint: disable=invalid-name
+# Mounts and size accounting are guarded per hosting volume via lock_manager,
+# not by one global lock: the double-mount race is between two threads handling
+# the same mountpoint, and each pool's stats.db is a separate file, whereas
+# global locks made every volume wait out the slowest one, pinning a gRPC
+# worker per waiter until the pool ran dry.
+STATFILE_LOCK_PREFIX = "statfile:"
+
+# Confirming a mount is a vmexec round-trip when mounts run on the host, and
+# CreateVolume probes every hosting volume twice, so the "already mounted"
+# answer is cached briefly to keep that fan-out off vmexec.  Only a real check
+# refreshes the entry, so a cached answer is never older than the TTL.
+MOUNT_CHECK_TTL = int(os.environ.get("KADALU_MOUNT_CHECK_TTL", "60"))
+_mount_seen = {}
+_mount_unmounts = defaultdict(int)
+_mount_seen_lock = threading.Lock()
+
+
+def mount_recently_confirmed(mountpoint):
+    """True if mountpoint was confirmed mounted within MOUNT_CHECK_TTL."""
+    with _mount_seen_lock:
+        seen_at = _mount_seen.get(mountpoint)
+    return seen_at is not None and (time.time() - seen_at) < MOUNT_CHECK_TTL
+
+
+def mount_check_token(mountpoint):
+    """
+    Snapshot to hand back to remember_mount() after an unlocked mount check.
+
+    Confirming a mount and caching that answer are two steps, and an unmount
+    can land between them.  Without the token the cache would then hold a
+    confirmation for a mount that no longer exists, and every caller for the
+    next TTL would skip mounting and fail its first I/O instead.
+    """
+    with _mount_seen_lock:
+        return _mount_unmounts[mountpoint]
+
+
+def remember_mount(mountpoint, token=None):
+    """
+    Record that mountpoint was just confirmed mounted.
+
+    token comes from mount_check_token() called before the check; the
+    confirmation is discarded if an unmount happened since.  Callers that hold
+    the mountpoint lock cannot race an unmount and pass nothing.
+    """
+    with _mount_seen_lock:
+        if token is not None and token != _mount_unmounts[mountpoint]:
+            return
+        _mount_seen[mountpoint] = time.time()
+
+
+def forget_mount(mountpoint):
+    """Drop a cached confirmation so the next caller re-checks for real."""
+    with _mount_seen_lock:
+        _mount_unmounts[mountpoint] += 1
+        _mount_seen.pop(mountpoint, None)
 
 
 class Volume():
@@ -111,6 +167,21 @@ def filter_storage_name(volume, filters):
     return volume
 
 
+def filter_gluster_volname(volume, filters):
+    """
+    If a storageclass names an external gluster volume then only include the
+    hosting volume backed by it. check_external_volume() already requires this
+    to match before it will serve a PV, so filtering here cannot exclude a
+    hosting volume that could have served the request.
+    """
+    gluster_volname = filters.get("gluster_volname", None)
+    if gluster_volname is not None \
+            and gluster_volname != volume.get("gluster_volname", None):
+        return None
+
+    return volume
+
+
 def filter_storage_type(volume, filters):
     """
     If Host Volume type is specified then only get the hosting
@@ -154,7 +225,8 @@ def get_pv_hosting_volumes(filters={}, iteration=40):
     total_volumes = 0
 
     filter_funcs = [
-        filter_node_affinity, filter_storage_type, filter_supported_pvtype
+        filter_node_affinity, filter_storage_type, filter_supported_pvtype,
+        filter_gluster_volname
     ]
 
     for filename in os.listdir(VOLINFO_DIR):
@@ -222,7 +294,7 @@ def update_free_size(hostvol, pvname, sizechange):
     # Check for mount availability before updating the free size
     retry_errors(os.statvfs, [mntdir], [ENOTCONN])
 
-    with statfile_lock:
+    with lock_manager.hold(STATFILE_LOCK_PREFIX + hostvol):
         with SizeAccounting(hostvol, mntdir) as acc:
             # Reclaim space
             if sizechange > 0:
@@ -238,7 +310,7 @@ def mount_and_select_hosting_volume(pv_hosting_volumes, required_size):
         mntdir = os.path.join(HOSTVOL_MOUNTDIR, hvol)
         mount_glusterfs(volume, mntdir)
 
-        with statfile_lock:
+        with lock_manager.hold(STATFILE_LOCK_PREFIX + hvol):
             # Stat done before `os.path.exists` to prevent ignoring
             # file not exists even in case of ENOTCONN
             mntdir_stat = retry_errors(os.statvfs, [mntdir], [ENOTCONN])
@@ -447,7 +519,7 @@ def is_hosting_volume_free(hostvol, requested_pvsize):
     """Check if host volume is free to expand or create (external)volume"""
 
     mntdir = os.path.join(HOSTVOL_MOUNTDIR, hostvol)
-    with statfile_lock:
+    with lock_manager.hold(STATFILE_LOCK_PREFIX + hostvol):
 
         # Stat done before `os.path.exists` to prevent ignoring
         # file not exists even in case of ENOTCONN
@@ -818,14 +890,22 @@ def delete_volume(volname):
     return
 
 
-def search_volume(volname):
-    """Search for a Volume by name in all Hosting Volumes"""
+def search_volume(volname, filters=None):
+    """
+    Search for a Volume by name in the Hosting Volumes matching filters.
+
+    Every hosting volume in scope gets mounted, so callers that know which
+    hosting volumes could hold the PV should pass the request filters: on a
+    deployment with many pools the difference is one mount instead of one per
+    pool. Callers without that context (delete, expand, validate) pass nothing
+    and every hosting volume is searched.
+    """
     volhash = get_volname_hash(volname)
     subdir_path = get_volume_path(PV_TYPE_SUBVOL, volhash, volname)
     virtblock_path = get_volume_path(PV_TYPE_VIRTBLOCK, volhash, volname)
     rawblock_path = get_volume_path(PV_TYPE_RAWBLOCK, volhash, volname)
 
-    host_volumes = get_pv_hosting_volumes({})
+    host_volumes = get_pv_hosting_volumes(filters or {})
     for volume in host_volumes:
         hvol = volume['name']
         mntdir = os.path.join(HOSTVOL_MOUNTDIR, hvol)
@@ -899,10 +979,59 @@ def volume_list(voltype=None):
     return volumes
 
 
+def is_mountpoint(path):
+    """
+    Whether path is a mount point, answered from /proc/self/mountinfo.
+
+    os.path.ismount() stats the path, and a stat into a glusterfs FUSE mount
+    whose client is gone blocks in the kernel with nothing able to interrupt
+    it: the gRPC deadline expires, kubelet retries, and the worker that made
+    the call is never returned to the pool.  Enough of those and the plugin
+    stops answering even the RPCs that touch no storage at all.  mountinfo
+    answers the same question by reading a proc file, so a dead mount costs
+    nothing.
+    """
+    target = os.path.normpath(path)
+    targets = {target}
+
+    # mountinfo records the canonical path, so on a node that symlinks its
+    # kubelet root onto another disk nothing would ever match by string and
+    # unmount_volume() would skip every umount it was asked to make, leaking
+    # the mounts this is meant to clean up.  os.path.ismount() did not have
+    # that problem because the kernel resolved the path for it.  Only the
+    # parent is resolved, and only outside the pool mounts: the parent of a
+    # kubelet target is an ordinary directory on the node, whereas resolving a
+    # path inside a wedged gluster mount would block in exactly the way the
+    # stat this function replaces did.
+    parent = os.path.dirname(target)
+    pool_root = HOSTVOL_MOUNTDIR.rstrip(os.sep)
+    if parent != pool_root and not parent.startswith(pool_root + os.sep):
+        targets.add(os.path.join(os.path.realpath(parent),
+                                 os.path.basename(target)))
+
+    with open("/proc/self/mountinfo") as mountinfo:
+        for line in mountinfo:
+            # mountID parentID major:minor root mountPoint ...
+            fields = line.split(" ", 5)
+            if len(fields) < 5:
+                continue
+            # Whitespace and backslashes are octal escaped in this file, and
+            # "\134" is undone last so an escaped backslash is not reread as
+            # the start of another escape.
+            mount_point = fields[4].replace("\\040", " ") \
+                                   .replace("\\011", "\t") \
+                                   .replace("\\012", "\n") \
+                                   .replace("\\134", "\\")
+            if mount_point in targets:
+                return True
+
+    return False
+
+
 def mount_volume(pvpath, mountpoint, pvtype, fstype=None):
     """Mount a Volume"""
     # Check if the volume is already mounted
-    if os.path.ismount(mountpoint):
+    if is_mountpoint(mountpoint):
         logging.info(logf("Volume is already mounted", mountpoint=mountpoint))
         return True
 
@@ -945,8 +1074,9 @@ def unmount_glusterfs(mountpoint):
     """Unmount GlusterFS mount"""
     volname = os.path.basename(mountpoint)
     if is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
+        with lock_manager.hold(mountpoint):
             execute("/usr/bin/fusermount", "-u", mountpoint)
+            forget_mount(mountpoint)
 
 
 def unmount_volume(mountpoint):
@@ -974,13 +1104,13 @@ def unmount_volume(mountpoint):
                 cmd = ["losetup", "-d", f"/dev/{loop}"]
                 execute(*cmd)
 
-    if os.path.ismount(mountpoint):
+    if is_mountpoint(mountpoint):
         execute(UNMOUNT_CMD, mountpoint)
 
 
 def expand_mounted_volume(mountpoint):
     """Expand a Volume"""
-    if os.path.ismount(mountpoint):
+    if is_mountpoint(mountpoint):
         execute("xfs_growfs", "-d", mountpoint)
 
 
@@ -1003,6 +1133,24 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             ))
             return mountpoint
 
+    # Ignore if already glusterfs process running for that volume.  Checked
+    # before the reachability probe below: an existing mount is returned
+    # regardless of what that probe would say, and paying for it here cost
+    # every caller that walks all hosting volumes looking for one PV.
+    if mount_recently_confirmed(mountpoint):
+        return mountpoint
+
+    # Taken before the check, because this path runs without the mountpoint
+    # lock and an unmount landing mid-check must not be cached away.
+    token = mount_check_token(mountpoint)
+    if is_gluster_mount_proc_running(volname, mountpoint):
+        remember_mount(mountpoint, token)
+        logging.debug(logf(
+            "Already mounted",
+            mount=mountpoint
+        ))
+        return mountpoint
+
     with open(os.path.join(VOLINFO_DIR, "%s.info" % volname)) as info_file:
         data = json.load(info_file)
     for brick in data["bricks"]:
@@ -1020,22 +1168,15 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
         ))
         raise
 
-    # Ignore if already glusterfs process running for that volume
-    if is_gluster_mount_proc_running(volname, mountpoint):
-        logging.debug(logf(
-            "Already mounted",
-            mount=mountpoint
-        ))
-        return mountpoint
-
     if not os.path.exists(mountpoint):
         makedirs(mountpoint)
 
-    with mount_lock:
+    with lock_manager.hold(mountpoint):
         # Re-check inside lock to prevent TOCTOU race where two threads
         # both pass the above check and then both mount, creating duplicate
         # FUSE processes (mount leak).
         if is_gluster_mount_proc_running(volname, mountpoint):
+            remember_mount(mountpoint)
             logging.debug(logf(
                 "Already mounted (inside lock)",
                 mount=mountpoint
@@ -1083,6 +1224,7 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
             # evaluate to 0, so this check was always False, causing the
             # error to propagate and the caller to retry-mount (FUSE leak).
             if err.ret == 32 and is_gluster_mount_proc_running(volname, mountpoint):
+                remember_mount(mountpoint)
                 logging.debug(logf(
                     "Already mounted (code 32)",
                     mount=mountpoint
@@ -1096,6 +1238,8 @@ def mount_glusterfs(volume, mountpoint, is_client=False):
                     error=format(err)
                 ))
                 raise err
+
+        remember_mount(mountpoint)
 
     return mountpoint
 
@@ -1125,7 +1269,7 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
     # Try to mount the Host Volume, handle failure if
     # already mounted
     if not is_gluster_mount_proc_running(volname, mountpoint):
-        with mount_lock:
+        with lock_manager.hold(mountpoint):
             # Re-check inside lock to prevent TOCTOU race (FUSE mount leak)
             if is_gluster_mount_proc_running(volname, mountpoint):
                 if not os.path.exists(mountpoint):
