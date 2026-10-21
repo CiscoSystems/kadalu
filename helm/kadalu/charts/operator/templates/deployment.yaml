@@ -34,8 +34,12 @@ spec:
       containers:
         - name: kadalu-operator
           securityContext:
-            capabilities: {}
-            privileged: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: {{include "common.images.image" .}}/kadalu-operator:{{ include "common.version" . }}
           imagePullPolicy: {{ .Values.global.image.pullPolicy }}
           env:

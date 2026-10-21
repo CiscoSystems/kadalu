@@ -49,6 +49,9 @@ if vmexecMnt == "True":
 VOLFILES_DIR = "/kadalu/volfiles"
 VOLINFO_DIR = "/var/lib/gluster"
 HOST_IP = os.environ.get('HOST_IP')
+SSH_KNOWN_HOSTS = "/etc/secret-volume/ssh-knownhosts"
+# ssh joins the remote command into one string run by the remote shell
+_SAFE_SSH_ARG = re.compile(r'^[A-Za-z0-9._/:-]+$')
 
 # Mounts and size accounting are guarded per hosting volume via lock_manager,
 # not by one global lock: the double-mount race is between two threads handling
@@ -1257,6 +1260,30 @@ def verify_mount(mountpoint):
         return False
 
 
+def gluster_ssh_cmd(privkey, user, host, *gluster_args):
+    """
+    Build the ssh argv for running `sudo gluster ...` on an external host.
+    Host keys must be pinned through the glusterquota secret.
+    """
+    if not os.path.isfile(SSH_KNOWN_HOSTS):
+        raise CommandException(-1, "ssh", "%s not found, refusing ssh "
+                               "without pinned host keys" % SSH_KNOWN_HOSTS)
+    for arg in (user, host) + gluster_args:
+        if not _SAFE_SSH_ARG.match(str(arg)):
+            raise CommandException(-1, "ssh", "unsafe argument: %r" % arg)
+    return [
+        "ssh",
+        "-oStrictHostKeyChecking=yes",
+        "-oUserKnownHostsFile=%s" % SSH_KNOWN_HOSTS,
+        "-oGlobalKnownHostsFile=/dev/null",
+        "-oBatchMode=yes",
+        "-i", privkey,
+        "-l", str(user),
+        "--", str(host),
+        "sudo", "gluster", *[str(arg) for arg in gluster_args]
+    ]
+
+
 def handle_external_volume(volume, mountpoint, is_client, hosts):
     """
     Handle mounting of volume with external host and setting of quota
@@ -1311,23 +1338,10 @@ def handle_external_volume(volume, mountpoint, is_client, hosts):
             return
 
         logging.debug(logf("Set quota-deem-statfs for gluster directory Quota"))
-        quota_deem_cmd = [
-            "ssh",
-            "-oStrictHostKeyChecking=accept-new",
-            "-oUserKnownHostsFile=/var/lib/gluster/known_hosts",
-            "-oBatchMode=yes",
-            "-i",
-            "%s" % secret_private_key,
-            "%s@%s" % (secret_username, g_host),
-            "sudo",
-            "gluster",
-            "volume",
-            "set",
-            "%s" % volume['g_volname'],
-            "quota-deem-statfs",
-            "on"
-        ]
         try:
+            quota_deem_cmd = gluster_ssh_cmd(
+                secret_private_key, secret_username, g_host,
+                "volume", "set", volume['g_volname'], "quota-deem-statfs", "on")
             execute(*quota_deem_cmd)
         except CommandException as err:
             errmsg = "Unable to set quota-deem-statfs via ssh"

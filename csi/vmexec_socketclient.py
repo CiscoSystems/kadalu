@@ -38,6 +38,12 @@ VMEXEC_CONNECT_TIMEOUT = int(os.environ.get("VMEXEC_CONNECT_TIMEOUT", "10"))
 # Maximum response size from vmexec server (16 KB)
 MAX_RESPONSE_SIZE = 16384
 
+# vmexec takes a single space-joined command string and runs it as root on the
+# host, so every argument must be one word free of shell metacharacters.
+# Backslash and '*' are needed for the re.escape()d pgrep pattern, '~' for
+# kubelet volume paths, '[' ']' for bracketed IPv6 hosts.
+_SAFE_VMEXEC_ARG = re.compile(r'^[A-Za-z0-9_./:=,@%+~\\*\[\]-]+$')
+
 # A worker inside a vmexec round trip is stuck there until the host answers or
 # SOCKET_TIMEOUT expires, and the gRPC pool is the only bound on how many can
 # be.  Once every worker is in one, the RPCs that touch no storage at all --
@@ -239,7 +245,10 @@ def _recv_all(sock, max_size=MAX_RESPONSE_SIZE):
 
 def socket_client(commandList):
     cmd = substitute_cmd(commandList)
-    # Send command as JSON array for structured execution (CWE-78 mitigation)
+    for arg in cmd:
+        if not _SAFE_VMEXEC_ARG.match(str(arg)):
+            logging.error("Refusing vmexec command with unsafe argument: %r", arg)
+            raise CommandException(-1, cmd[0], "unsafe argument rejected: %r" % arg)
     cmd_str = " ".join(cmd)
 
     json_data = {

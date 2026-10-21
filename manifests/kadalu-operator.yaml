@@ -226,6 +226,9 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["volumeattachments"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattributesclasses"]
+    verbs: ["get", "list", "watch"]
 ---
 # Source: kadalu/charts/operator/templates/rbac.yaml
 # CSI External Resizer
@@ -250,6 +253,9 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattributesclasses"]
+    verbs: ["get", "list", "watch"]
 ---
 # Source: kadalu/charts/operator/templates/rbac.yaml
 kind: ClusterRoleBinding
@@ -319,7 +325,6 @@ rules:
       - configmaps
       - persistentvolumes
       - pods
-      - pods/exec
       - services
     verbs:
       - create
@@ -389,8 +394,12 @@ spec:
       containers:
         - name: kadalu-operator
           securityContext:
-            capabilities: {}
-            privileged: true
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           image: docker.io/kadalu/kadalu-operator:devel
           imagePullPolicy: IfNotPresent
           env:
