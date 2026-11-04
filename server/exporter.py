@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 from kadalulib import logf, logging_setup
 
-metrics_app = FastAPI()
+metrics_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 @metrics_app.get("/_api/metrics")
 def metrics():
@@ -63,4 +63,5 @@ if __name__ == "__main__":
         "Started metrics exporter process at port 8050"
     ))
 
-    uvicorn.run("exporter:metrics_app", host="0.0.0.0", port=8050, log_level="info")
+    uvicorn.run("exporter:metrics_app", host="0.0.0.0", port=8050, log_level="info",
+                server_header=False)

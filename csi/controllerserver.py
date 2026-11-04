@@ -17,7 +17,8 @@ from kadalulib import (PV_TYPE_RAWBLOCK, PV_TYPE_SUBVOL, PV_TYPE_VIRTBLOCK,
 from volumeutils import (HOSTVOL_MOUNTDIR, check_external_volume,
                          create_block_volume, create_subdir_volume,
                          delete_volume, expand_mounted_volume,
-                         get_pv_hosting_volumes, is_hosting_volume_free,
+                         get_pv_hosting_volumes, gluster_ssh_cmd,
+                         is_hosting_volume_free,
                          mount_and_select_hosting_volume, search_volume,
                          unmount_glusterfs, update_block_volume,
                          update_free_size, update_subdir_volume,
@@ -26,18 +27,9 @@ from volumeutils import (HOSTVOL_MOUNTDIR, check_external_volume,
 VOLINFO_DIR = "/var/lib/gluster"
 KADALU_VERSION = os.environ.get("KADALU_VERSION", "latest")
 
-# Safe name pattern for volume names and paths used in commands (CWE-78 prevention)
-_SAFE_CMD_ARG_PATTERN = re.compile(r'^[a-zA-Z0-9._/:-]+$')
-
 # Kubernetes-safe PVC/PV name pattern (CWE-22 prevention)
 _SAFE_K8S_NAME_PATTERN = re.compile(r'^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$')
 
-
-def _validate_cmd_arg(value, field_name):
-    """Validate a value contains only safe characters for use in commands."""
-    if not value or not _SAFE_CMD_ARG_PATTERN.match(str(value)):
-        raise ValueError("Invalid %s: contains unsafe characters: %s" % (field_name, repr(value)))
-    return str(value)
 
 # Generator to be used in ListVolumes
 GEN = None
@@ -61,35 +53,10 @@ def execute_gluster_quota_command(privkey, user, host, gvolname, path, size):
         logging.error(logf(errmsg))
         return errmsg
 
-    # Validate all inputs to prevent command injection via SSH (CWE-78)
     try:
-        _validate_cmd_arg(gvolname, "gvolname")
-        _validate_cmd_arg(path, "path")
-        _validate_cmd_arg(host, "host")
-        _validate_cmd_arg(user, "user")
-    except ValueError as err:
-        errmsg = "Invalid argument for quota command: %s" % str(err)
-        logging.error(logf(errmsg))
-        return errmsg
-
-    quota_cmd = [
-        "ssh",
-        "-oStrictHostKeyChecking=accept-new",
-        "-oUserKnownHostsFile=/var/lib/gluster/known_hosts",
-        "-oBatchMode=yes",
-        "-i",
-        "%s" % privkey,
-        "%s@%s" % (user, host),
-        "sudo",
-        "gluster",
-        "volume",
-        "quota",
-        "%s" % gvolname,
-        "limit-usage",
-        "/%s" % path,
-        "%s" % size,
-    ]
-    try:
+        quota_cmd = gluster_ssh_cmd(privkey, user, host, "volume", "quota",
+                                    gvolname, "limit-usage", "/%s" % path,
+                                    "%s" % size)
         execute(*quota_cmd)
     except CommandException as err:
         errmsg = "Unable to set Gluster Quota via ssh"

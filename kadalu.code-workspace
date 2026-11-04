@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../image-creation"
+		},
+		{
+			"path": "../k8s-orchestrator"
+		}
+	],
+	"settings": {}
+}

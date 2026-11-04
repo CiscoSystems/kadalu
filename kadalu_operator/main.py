@@ -63,6 +63,72 @@ def template(filename, **kwargs):
     return Template(content).stream(**kwargs).dump(filename)
 
 
+# Storage CR fields are rendered unquoted into pod YAML and end up in
+# glusterfs/ssh command lines run as root on the host, so they are restricted
+# to plain words.
+_K8S_NAME_RE = re.compile(r'^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$')
+_HOST_RE = re.compile(r'^[A-Za-z0-9:]([A-Za-z0-9.:-]*[A-Za-z0-9])?$')
+_ABS_PATH_RE = re.compile(r'^/[A-Za-z0-9._/-]*$')
+_GVOLNAME_RE = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.-]*$')
+_GLUSTER_OPTION_RE = re.compile(r'^[a-z][a-z0-9-]*(=[A-Za-z0-9._:-]+)?$')
+_TOLERATION_VALUE_RE = re.compile(r'^[A-Za-z0-9._/:=-]*$')
+_TOLERATION_KEYS = {"key", "operator", "value", "effect", "tolerationSeconds"}
+# Options that would redirect where the client volfile comes from or what the
+# root glusterfs process on the host writes to
+_DENIED_GLUSTER_OPTIONS = {
+    "volfile", "volfile-id", "volfile-server", "volfile-server-port",
+    "volfile-server-transport", "log-file", "pid-file", "socket-file",
+    "dump-fuse", "client-pid", "process-name", "fs-display-name",
+}
+
+
+def _field_ok(regex, value, field):
+    """True if value is a string fully matching regex"""
+    if isinstance(value, str) and len(value) <= 253 and regex.match(value):
+        if regex is not _ABS_PATH_RE or ".." not in value.split("/"):
+            return True
+    logging.error(logf("Invalid value in Storage spec", field=field,
+                       value=repr(value)))
+    return False
+
+
+def gluster_options_validation(options):
+    """Validate comma separated glusterfs client options"""
+    if not options:
+        return True
+    if not isinstance(options, str):
+        return _field_ok(_GLUSTER_OPTION_RE, options, "gluster_options")
+    for option in options.split(","):
+        if not _field_ok(_GLUSTER_OPTION_RE, option, "gluster_options"):
+            return False
+        if option.split("=", 1)[0] in _DENIED_GLUSTER_OPTIONS:
+            logging.error(logf("gluster option not allowed", option=option))
+            return False
+    return True
+
+
+def tolerations_validation(tolerations):
+    """Validate tolerations before they are rendered into pod specs"""
+    if tolerations is None:
+        return True
+    if not isinstance(tolerations, list):
+        logging.error("tolerations must be a list")
+        return False
+    for toleration in tolerations:
+        if not isinstance(toleration, dict) or \
+           not set(toleration) <= _TOLERATION_KEYS:
+            logging.error(logf("Invalid toleration", toleration=toleration))
+            return False
+        for key, val in toleration.items():
+            if key == "tolerationSeconds":
+                if not isinstance(val, int) or isinstance(val, bool):
+                    logging.error(logf("Invalid toleration", toleration=toleration))
+                    return False
+            elif not _field_ok(_TOLERATION_VALUE_RE, val, "tolerations." + key):
+                return False
+    return True
+
+
 def bricks_validation(bricks):
     """Validate Brick path and node options"""
     ret = True
@@ -71,7 +137,17 @@ def bricks_validation(bricks):
             break
 
         if brick.get("pvc", None) is not None:
+            ret = _field_ok(_K8S_NAME_RE, brick["pvc"], "pvc")
             continue
+
+        for field in ("path", "device"):
+            if brick.get(field, None) is not None and \
+               not _field_ok(_ABS_PATH_RE, brick[field], field):
+                ret = False
+
+        if brick.get("node", None) is not None and \
+           not _field_ok(_K8S_NAME_RE, brick["node"], "node"):
+            ret = False
 
         if brick.get("path", None) is None and \
            brick.get("device", None) is None:
@@ -99,6 +175,9 @@ def validate_ext_details(obj):
     if cluster.get('gluster_hosts', None):
         valid += 1
         hosts = cluster.get('gluster_hosts')
+        if not isinstance(hosts, list):
+            logging.error("gluster_hosts must be a list")
+            return False
         ghosts.extend(hosts)
     if cluster.get('gluster_host', None):
         valid += 1
@@ -110,6 +189,16 @@ def validate_ext_details(obj):
 
     if valid < 2:
         logging.error(logf("No 'host' and 'volname' details provided."))
+        return False
+
+    if not all(_field_ok(_HOST_RE, host, "gluster_hosts") for host in ghosts) \
+       or not _field_ok(_GVOLNAME_RE, cluster.get('gluster_volname'),
+                        "gluster_volname") \
+       or not gluster_options_validation(cluster.get('gluster_options')):
+        return False
+    if not isinstance(gport, int) or isinstance(gport, bool) \
+       or not 0 < gport < 65536:
+        logging.error(logf("Invalid gluster_port", gluster_port=repr(gport)))
         return False
 
     if not is_host_reachable(ghosts, gport):
@@ -148,6 +237,9 @@ def validate_volume_request(obj):
         logging.error(logf("Invalid Storage type",
                            valid_types=",".join(VALID_HOSTING_VOLUME_TYPES),
                            provided_type=voltype))
+        return False
+
+    if not tolerations_validation(obj["spec"].get("tolerations")):
         return False
 
     if voltype == VOLUME_TYPE_EXTERNAL:
@@ -226,6 +318,12 @@ def validate_volume_request(obj):
                            not tiebreaker.get("path", None)):
             logging.error(logf("'tiebreaker' provided for replica2 "
                                "config is not valid"))
+            return False
+        if tiebreaker and (
+                not _field_ok(_HOST_RE, tiebreaker["node"], "tiebreaker.node")
+                or not _field_ok(_ABS_PATH_RE, tiebreaker["path"],
+                                 "tiebreaker.path")
+                or not isinstance(tiebreaker.get("port", 24007), int)):
             return False
 
     if voltype == VOLUME_TYPE_ARBITER:
