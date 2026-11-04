@@ -68,7 +68,8 @@ COPY csi/watch-logrotate.sh    /kadalu/
 COPY extras/kadalu-logrotate.conf     /kadalu/logrotate.conf
 
 RUN chmod +x /kadalu/startup.sh && \
-    chmod +x /kadalu/client_heal.sh
+    chmod +x /kadalu/client_heal.sh && \
+    chmod 0644 /kadalu/logrotate.conf
 
 ARG version="(unknown)"
 # Container build time (date -u '+%Y-%m-%dT%H:%M:%S.%NZ')

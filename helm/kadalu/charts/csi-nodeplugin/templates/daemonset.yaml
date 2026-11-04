@@ -98,7 +98,7 @@ spec:
             - name: glusterfs-vol
               mountPath: /var/run/vmexec-socket/
         - name: kadalu-logging
-          image: docker.io/library/busybox:latest
+          image: {{include "common.images.image" .}}/busybox/busybox:latest
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh"]
           args: ["-c", "while true; do logcnt=$(/bin/ls /var/log/gluster/ | wc -l); if [ ${logcnt} -gt 0 ]; then break; fi; sleep 5; done; tail -F /var/log/gluster/*.log"]
