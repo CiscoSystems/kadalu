@@ -40,66 +40,8 @@ spec:
                 - "hybrid"
       serviceAccountName: kadalu-csi-provisioner
       containers:
-        - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v6.4.0
-          ports:
-            - containerPort: 8080
-              name: http-endpoint
-              protocol: TCP
-          livenessProbe:
-            failureThreshold: 10
-            httpGet:
-                path: /healthz/leader-election
-                port: http-endpoint
-            initialDelaySeconds: 120
-            timeoutSeconds: 10
-            periodSeconds: 30
-          args:
-            - "--csi-address=$(ADDRESS)"
-            - "--timeout=3m"
-            - "--leader-election"
-            - "--http-endpoint=:8080"
-          env:
-            - name: ADDRESS
-              value: /var/lib/csi/sockets/pluginproxy/csi.sock
-            - name: KADALU_VERSION
-              value: "{{ kadalu_version }}"
-            - name: K8S_DIST
-              value: "{{ k8s_dist }}"
-            - name: VERBOSE
-              value: "{{ verbose }}"
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /var/lib/csi/sockets/pluginproxy/
-        - name: csi-attacher
-          image: registry.k8s.io/sig-storage/csi-attacher:v4.13.0
-          args:
-            - "--v=5"
-            - "--csi-address=$(ADDRESS)"
-            - "--leader-election"
-            - "--http-endpoint=:8081"
-          ports:
-            - containerPort: 8081
-              name: http-endpoint
-              protocol: TCP
-          readinessProbe:
-            failureThreshold: 2
-            httpGet:
-                path: /healthz/leader-election
-                port: http-endpoint
-            initialDelaySeconds: 30
-            timeoutSeconds: 10
-            periodSeconds: 20
-          env:
-            - name: ADDRESS
-              value: /var/lib/csi/sockets/pluginproxy/csi.sock
-            - name: KADALU_VERSION
-              value: "{{ kadalu_version }}"
-            - name: K8S_DIST
-              value: "{{ k8s_dist }}"
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /var/lib/csi/sockets/pluginproxy/
+        # Kept first: kubelet starts containers in order and waits for each
+        # postStart hook, so the CSI sidecars start only once csi.sock exists.
         - name: kadalu-provisioner
           securityContext:
             privileged: true
@@ -107,6 +49,10 @@ spec:
               add: ["CAP_SYS_ADMIN", "SYS_ADMIN"]
             allowPrivilegeEscalation: true
           image: dockerhub.cisco.com/robot-dockerprod/kadalu-csi:###tag###
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "i=0; while [ $i -lt 300 ]; do [ -S /plugin/csi.sock ] && exit 0; i=$((i+1)); sleep 1; done; exit 0"]
           livenessProbe:
             httpGet:
               path: /healthz
@@ -152,8 +98,68 @@ spec:
               mountPath: "/etc/secret-volume"
             - name: glusterfs-vol
               mountPath: /var/run/vmexec-socket/
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v6.4.0
+          ports:
+            - containerPort: 8080
+              name: http-endpoint
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 10
+            httpGet:
+                path: /healthz/leader-election
+                port: http-endpoint
+            initialDelaySeconds: 120
+            timeoutSeconds: 10
+            periodSeconds: 30
+          args:
+            - "--csi-address=$(ADDRESS)"
+            - "--timeout=3m"
+            - "--leader-election"
+            - "--http-endpoint=:8080"
+          env:
+            - name: ADDRESS
+              value: /var/lib/csi/sockets/pluginproxy/csi.sock
+            - name: KADALU_VERSION
+              value: "{{ kadalu_version }}"
+            - name: K8S_DIST
+              value: "{{ k8s_dist }}"
+            - name: VERBOSE
+              value: "{{ verbose }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
+        - name: csi-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.13.0
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election"
+            - "--http-endpoint=:8081"
+          ports:
+            - containerPort: 8081
+              name: http-attacher
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 2
+            httpGet:
+                path: /healthz/leader-election
+                port: http-attacher
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 20
+          env:
+            - name: ADDRESS
+              value: /var/lib/csi/sockets/pluginproxy/csi.sock
+            - name: KADALU_VERSION
+              value: "{{ kadalu_version }}"
+            - name: K8S_DIST
+              value: "{{ k8s_dist }}"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /var/lib/csi/sockets/pluginproxy/
         - name: kadalu-logging
-          image: docker.io/library/busybox:latest
+          image: dockerhub.cisco.com/robot-dockerprod/busybox/busybox:latest
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh"]
           args: ["-c", "while true; do logcnt=$(/bin/ls /var/log/gluster/ | wc -l); if [ ${logcnt} -gt 0 ]; then break; fi; sleep 5; done; tail -F /var/log/gluster/*.log"]
@@ -164,13 +170,13 @@ spec:
           image: registry.k8s.io/sig-storage/csi-resizer:v2.3.0
           ports:
             - containerPort: 8082
-              name: http-endpoint
+              name: http-resizer
               protocol: TCP
           readinessProbe:
             failureThreshold: 5
             httpGet:
                 path: /healthz/leader-election
-                port: http-endpoint
+                port: http-resizer
             initialDelaySeconds: 30
             timeoutSeconds: 10
             periodSeconds: 20

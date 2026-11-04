@@ -374,10 +374,13 @@ class ControllerServer(csi_pb2_grpc.ControllerServicer):
                 "Here as checking external volume failed",
                 external_volume=ext_volume
             ))
+            # Usually transient (pool info not yet synced or mount failed).
+            # csi-provisioner >= v6 retries INVALID_ARGUMENT only every
+            # retry-interval-max, so report UNAVAILABLE to keep fast backoff.
             errmsg = "External Storage provided not valid"
             logging.error(errmsg)
             context.set_details(errmsg)
-            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
             return csi_pb2.CreateVolumeResponse()
 
         if not hostvol:
